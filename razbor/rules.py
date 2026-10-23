@@ -198,7 +198,7 @@ def recalc_contracts(store: Store, ids: list[int] | None = None, today: date | N
     """Пересчитать ситуацию и сроки. Без списка id пересчитывает весь портфель."""
     today = today or date.today()
     p = load_params(store)
-    facts_all = store.all_facts()
+    facts_all = store.all_facts(ids)
     conn = store.conn()
     from .actions import next_actions
 

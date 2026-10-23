@@ -120,6 +120,7 @@ const NAV = [
   ["#/", "Сводка", "M3 12l9-8 9 8M5 10v10h14V10"],
   ["#/portfolio", "Портфель", "M4 6h16M4 12h16M4 18h16"],
   ["#/batch", "Загрузка документов", "M12 16V4m0 0l-4 4m4-4l4 4M4 20h16"],
+  ["#/folders", "Подключённые папки", "M3 7h6l2 2h10v10H3z"],
   ["#/deadlines", "Сроки", "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "overdue"],
   ["#/ip", "Исполнительные производства", "M5 4h10l4 4v12H5zM14 4v5h5"],
   ["#/templates", "Шаблоны документов", "M6 3h9l4 4v14H6zM9 12h7M9 16h7"],
@@ -162,7 +163,7 @@ async function route() {
   try {
     const sum = await api("summary");
     renderNav(path === "#/" || path === "#" ? "#/" : path, { overdue: sum.overdue });
-    const screens = { "": Dash, portfolio: Portfolio, batch: Batch, card: Card, deadlines: Deadlines, ip: Ip, templates: Templates, tpl: Tpl, settings: Settings };
+    const screens = { "": Dash, portfolio: Portfolio, batch: Batch, card: Card, deadlines: Deadlines, ip: Ip, templates: Templates, tpl: Tpl, settings: Settings, folders: Folders };
     const fn = screens[parts[0] || ""] || Dash;
     const node = await fn(parts.slice(1), params, sum);
     if (tok === navToken) view.replaceChildren(node);
@@ -360,7 +361,8 @@ async function Card(parts) {
         h("div", null, h("b", null, x.doc_label || x.name), h("div", { class: "small muted" }, x.name + " · загрузил " + (x.loaded_by || "—") + ", " + fd(x.loaded_at))),
         h("div", { class: "row" },
           h("button", { class: "btn btn-s", onclick: () => { body.hidden = !body.hidden; } }, "Что найдено"),
-          h("a", { class: "btn btn-s", href: "/api/doc/" + x.id + "/file", target: "_blank" }, "Открыть файл"))),
+          x.has_file ? h("a", { class: "btn btn-s", href: "/api/doc/" + x.id + "/file", target: "_blank" }, "Открыть файл") : null)),
+      x.has_file && x.path ? h("div", { class: "small muted" }, "Файл: " + x.path) : null,
       x.reasons && x.reasons.length ? h("div", { class: "small", style: "color:#7C4300" }, "Проверить: " + x.reasons.join("; ")) : null,
       body);
   });
@@ -457,7 +459,8 @@ async function Batch(parts) {
     } catch (e) { status.replaceChildren(errBox(e.message)); }
   }
   return h("div", null, header("Загрузка документов", "Программа прочитает документы, найдёт договоры в портфеле и покажет, что к чему привязано. В карточки данные попадут только после вашего подтверждения."),
-    h("div", { class: "card mb" }, drop, status),
+    h("div", { class: "card mb" }, drop, status,
+      h("p", { class: "small muted mt" }, "Загруженные файлы нужны только на время чтения: после записи в карточки их копии удаляются, остаются найденные данные. Чтобы разобрать весь архив документов на диске, используйте «Подключённые папки».")),
     h("div", { class: "card" }, h("h2", null, "Прошлые загрузки"),
       past.length ? past.map((b) => h("div", { class: "row sp", style: "padding:8px 0;border-top:1px solid #EBEEF3" },
         h("a", { class: "link", href: "#/batch/" + b.id }, b.created.replace("T", " ").slice(0, 16)),
@@ -466,13 +469,19 @@ async function Batch(parts) {
 
 const GROUPS = [["ok", "Привязаны", "teal"], ["confirm", "Нужно подтвердить", "amb"], ["nf", "Не найдены в портфеле", "red"], ["seen", "Уже разобраны", "gray"], ["error", "Не прочитаны", "red"], ["skip", "Пропущены", "gray"], ["written", "Записаны", "blue"]];
 const groupOf = (it) => (it.written ? "written" : it.skipped ? "skip" : it.status === "seen" ? "seen" : it.status === "error" ? "error" : it.chosen != null ? "ok" : it.status === "confirm" ? "confirm" : "nf");
-const bstate = { filter: "ok" };
+const bstate = { filter: "ok", limit: 200 };
 
 async function BatchView(id) {
   const holder = h("div");
   let timer = null;
   async function load() {
     const b = await api("batch/" + id);
+    if (b.state === "reading" && b.source) {
+      holder.replaceChildren(h("div", { class: "banner blue" }, h("div", null, h("b", null, "Папка читается"), "Ниже то, что уже требует внимания. Подтверждать можно после окончания чтения.")), results(b));
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (location.hash === "#/batch/" + id && !document.querySelector("#modal:not([hidden])")) load().catch(() => {}); }, 4000);
+      return;
+    }
     if (b.state === "reading" || b.state === "new") {
       holder.replaceChildren(h("div", { class: "card" }, h("div", { class: "empty" }, h("b", null, b.state === "new" ? "Файлы загружены, чтение скоро начнётся" : "Читаю документы…"), "Прогресс виден вверху страницы. Окно можно не закрывать.")));
       clearTimeout(timer);
@@ -485,15 +494,18 @@ async function BatchView(id) {
     const grp = {};
     b.items.forEach((it) => { (grp[groupOf(it)] = grp[groupOf(it)] || []).push(it); });
     if (!grp[bstate.filter]) bstate.filter = ["ok", "confirm", "nf", "seen", "error", "skip", "written"].find((k) => grp[k]) || "ok";
-    const list = grp[bstate.filter] || [];
+    const all = grp[bstate.filter] || [];
+    const list = all.slice(0, bstate.limit);
     const toWrite = (grp.ok || []).length;
     const contracts = new Set((grp.ok || []).map((x) => x.chosen)).size;
     return h("div", null,
-      b.notes.length ? h("div", { class: "banner amb" }, h("div", null, h("b", null, "Замечания"), b.notes.join("; "))) : null,
-      h("div", { class: "row mb" }, GROUPS.filter(([k]) => grp[k]).map(([k, label]) => h("button", { class: "fchip" + (bstate.filter === k ? " on" : ""), onclick: () => { bstate.filter = k; holder.replaceChildren(results(b)); } }, label, h("small", null, grp[k].length)))),
+      b.auto ? h("div", { class: "banner teal" }, h("div", null, h("b", null, "Записано в карточки автоматически: " + num(b.auto)), "Это документы, договор которых определён уверенно. Здесь показано только то, что требует внимания.")) : null,
+      b.notes.length ? h("div", { class: "banner " + (b.source ? "gray" : "amb") }, h("div", null, h("b", null, b.source ? "Сводка" : "Замечания"), b.notes.join("; "))) : null,
+      h("div", { class: "row mb" }, GROUPS.filter(([k]) => grp[k]).map(([k, label]) => h("button", { class: "fchip" + (bstate.filter === k ? " on" : ""), onclick: () => { bstate.filter = k; bstate.limit = 200; holder.replaceChildren(results(b)); } }, label, h("small", null, grp[k].length)))),
       h("div", { class: "card flat" }, list.length ? h("div", { class: "scroll" }, h("table", { class: "tbl" },
         h("thead", null, h("tr", null, ["Файл", "Что это", "Договор", ""].map((t) => h("th", null, t)))),
-        h("tbody", null, list.map((it) => itemRows(b, it))))) : h("div", { class: "empty" }, "Здесь пусто.")),
+        h("tbody", null, list.map((it) => itemRows(b, it))))) : h("div", { class: "empty" }, "Здесь пусто."),
+        all.length > list.length ? h("div", { class: "pad" }, h("button", { class: "btn", onclick: () => { bstate.limit += 500; holder.replaceChildren(results(b)); } }, "Показать ещё (осталось " + num(all.length - list.length) + ")")) : null),
       h("div", { class: "sticky" },
         h("span", null, b.state === "written" ? "Всё записано." : "К записи: " + toWrite + " " + plural(toWrite, "документ", "документа", "документов") + " в " + contracts + " " + plural(contracts, "договор", "договора", "договоров")),
         h("div", { class: "row" },
@@ -513,7 +525,7 @@ async function BatchView(id) {
     const pickable = it.status !== "error" && !it.written;
     const ch = it.chosen_info;
     const rowMain = h("tr", null,
-      h("td", null, h("a", { class: "link", href: "/api/batch/" + id + "/file/" + it.idx, target: "_blank" }, it.name), it.rel !== it.name ? h("div", { class: "small muted" }, it.rel) : null,
+      h("td", null, it.written && !b.source ? h("b", null, it.name) : h("a", { class: "link", href: "/api/batch/" + id + "/file/" + it.idx, target: "_blank" }, it.name), it.rel !== it.name ? h("div", { class: "small muted" }, it.rel) : null,
         it.pages ? h("div", { class: "small muted" }, it.pages + " стр.") : null),
       h("td", null, it.doc_label ? chip(it.doc_label, "blue") : "—", it.reasons.length ? h("div", { class: "small", style: "color:#7C4300" }, "Проверить: " + it.reasons.join("; ")) : null),
       h("td", null,
@@ -554,6 +566,46 @@ async function BatchView(id) {
   await load();
   return h("div", null, header("Результат чтения", "Проверьте привязку и запишите документы в карточки договоров.", h("a", { class: "btn", href: "#/batch" }, "← К загрузке")), holder);
 }
+
+// ------------------------------------------------------------------ Подключённые папки
+async function Folders() {
+  const r = await api("sources");
+  const msg = h("div");
+  const path = h("input", { class: "fld", placeholder: "Например: S:\\Документы\\Портфель или \\\\server\\share\\Документы", style: "flex:1;min-width:280px" });
+  const auto = h("input", { type: "checkbox", checked: r.auto_scan, onchange: () => api("sources/auto", { on: auto.checked }) });
+  async function connect() {
+    msg.replaceChildren();
+    try {
+      const res = await api("sources/add", { path: path.value });
+      if (res.note) msg.replaceChildren(h("div", { class: "banner amb mt" }, h("div", null, res.note)));
+      if (res.job) watchJob(res.job.id).then(() => { if (location.hash === "#/folders") route(); });
+      route();
+    } catch (e) { msg.replaceChildren(errBox(e.message)); }
+  }
+  const STAT = [["written", "записано", "teal"], ["confirm", "подтвердить", "amb"], ["nf", "не найдены", "red"], ["seen", "повторы", "gray"], ["error", "не прочитаны", "red"]];
+  return h("div", null,
+    header("Подключённые папки", "Для разбора всего архива документов. Файлы остаются на своём месте и никуда не копируются."),
+    h("div", { class: "card mb" }, h("h2", null, "Подключить папку"),
+      h("p", { class: "small muted" }, "Укажите папку или сетевой диск с документами. Программа прочитает все PDF и сканы во вложенных папках в фоне, уверенные привязки сразу запишет в карточки, остальное покажет для проверки. Уже прочитанные файлы повторно не читаются: при следующей проверке берутся только новые и изменённые."),
+      h("div", { class: "row" }, path,
+        h("button", { class: "btn", onclick: async () => { const x = await api("sources/pick", {}); if (x.path) path.value = x.path; } }, "Обзор…"),
+        h("button", { class: "btn btn-p", onclick: connect }, "Подключить и прочитать")),
+      msg,
+      h("label", { class: "small muted mt", style: "display:block" }, auto, " Проверять новые файлы при каждом запуске программы")),
+    h("div", { class: "card" }, h("h2", null, "Подключено"),
+      r.sources.length ? r.sources.map((s) => h("div", { style: "padding:12px 0;border-top:1px solid #EBEEF3" },
+        h("div", { class: "row sp" },
+          h("div", null, h("b", null, s.path), s.available ? null : [" ", chip("недоступна", "red")],
+            h("div", { class: "small muted" }, "Файлов учтено: " + num(s.files) + (s.last_scan ? " · последняя проверка " + fd(s.last_scan) + " " + s.last_scan.slice(11, 16) : " · ещё не проверялась"))),
+          h("div", { class: "row" },
+            s.batch_id ? h("a", { class: "btn btn-s", href: "#/batch/" + s.batch_id }, "Что требует внимания") : null,
+            h("button", { class: "btn btn-s btn-p", disabled: !s.available, onclick: async (e) => { e.target.disabled = true; try { const j = await api("sources/" + s.id + "/scan", {}); watchJob(j.id).then(() => { if (location.hash === "#/folders") route(); }); } catch (er) { msg.replaceChildren(errBox(er.message)); } } }, "Проверить новые файлы"),
+            h("button", { class: "btn btn-s", onclick: async () => { if (!confirmBox()) return; await api("sources/" + s.id + "/remove", {}); route(); } }, "Отключить"))),
+        h("div", { class: "row mt" }, STAT.filter(([k]) => s.stats[k]).map(([k, l, c]) => chip(l + ": " + num(s.stats[k]), c)))))
+        : h("p", { class: "muted" }, "Пока ни одной папки не подключено.")),
+    h("p", { class: "small muted mt" }, "Отключение папки не удаляет ни файлы, ни уже записанные в карточки данные. Скорость: текстовый PDF читается за доли секунды, скан — несколько секунд на страницу. Большой архив может читаться часами; остановить можно в любой момент, при следующей проверке чтение продолжится с того же места."));
+}
+function confirmBox() { return true; }
 
 // ------------------------------------------------------------------ Сроки
 const DL_KINDS = [["", "Все"], ["limit", "Исковая давность"], ["reoffer", "Повторное предъявление"], ["present", "Предъявить лист"], ["rtk", "Банкротство"], ["estate", "Наследство"], ["check", "Проверка ИП"]];

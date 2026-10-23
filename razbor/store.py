@@ -83,6 +83,13 @@ CREATE TABLE IF NOT EXISTS manual(
   contract_id INTEGER NOT NULL, key TEXT NOT NULL, value TEXT, PRIMARY KEY(contract_id, key)
 );
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS sources(
+  id INTEGER PRIMARY KEY, path TEXT UNIQUE, added_at TEXT, added_by TEXT, last_scan TEXT, batch_id TEXT
+);
+CREATE TABLE IF NOT EXISTS src_files(
+  path TEXT PRIMARY KEY, src_id INTEGER, size INTEGER, mtime REAL, status TEXT, batch_id TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_sf_src ON src_files(src_id);
 CREATE TABLE IF NOT EXISTS imports(
   id INTEGER PRIMARY KEY, at TEXT, file TEXT, rows INTEGER, added INTEGER, updated INTEGER,
   skipped INTEGER, unmapped TEXT
@@ -253,9 +260,17 @@ class Store:
                 out[k] = v
         return out
 
-    def all_facts(self) -> dict[int, dict[str, str]]:
+    def all_facts(self, ids: list[int] | None = None) -> dict[int, dict[str, str]]:
         res: dict[int, dict[str, str]] = {}
-        for r in self.conn().execute("SELECT contract_id, key, value FROM facts ORDER BY doc_id"):
+        if ids is not None:
+            rows = []
+            for i in range(0, len(ids), 500):
+                part = ids[i:i + 500]
+                rows += self.conn().execute(f"SELECT contract_id, key, value FROM facts WHERE contract_id IN "
+                                            f"({','.join('?' * len(part))}) ORDER BY doc_id", part).fetchall()
+        else:
+            rows = self.conn().execute("SELECT contract_id, key, value FROM facts ORDER BY doc_id")
+        for r in rows:
             d = res.setdefault(r[0], {})
             k, v = r[1], r[2]
             if v is None:
@@ -284,7 +299,8 @@ class Store:
         return self.q("SELECT date, text, doc_id FROM events WHERE contract_id=? ORDER BY date, id", (cid,))
 
     def documents_for(self, cid: int) -> list[dict]:
-        rows = self.q("SELECT id, name, doc_key, doc_label, grp, reasons, fields, loaded_by, loaded_at, pages "
+        rows = self.q("SELECT id, name, doc_key, doc_label, grp, reasons, fields, loaded_by, loaded_at, pages, "
+                      "stored IS NOT NULL AS has_file, stored AS path "
                       "FROM documents WHERE contract_id=? ORDER BY id DESC", (cid,))
         for r in rows:
             r["reasons"] = json.loads(r["reasons"] or "[]")

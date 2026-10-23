@@ -107,3 +107,4 @@ a.cand{text-decoration:none;color:inherit}
 .todo-n{width:24px;height:24px;flex:none;border-radius:50%;background:#EDF0F5;color:#465266;font-size:12px;font-weight:600;display:inline-flex;align-items:center;justify-content:center}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
 .dot.red{background:#C0392B}.dot.amb{background:#D88B00}.dot.blue{background:#1F5FBF}.dot.gray{background:#8A96A8}
+.banner.blue{background:#EEF4FF;border-color:#BCD2F6}

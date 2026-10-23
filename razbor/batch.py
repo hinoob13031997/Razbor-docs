@@ -50,6 +50,7 @@ class Item:
     event: list = field(default_factory=list)
     written: bool = False
     skipped: bool = False
+    inplace: bool = False      # файл лежит в подключённой папке: не копируем и не удаляем
 
 
 @dataclass
@@ -61,6 +62,8 @@ class Batch:
     items: list[Item] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     summary: dict = field(default_factory=dict)
+    auto: int = 0               # записано автоматически (подключённая папка)
+    source: str = ""            # путь подключённой папки, если пачка из неё
 
     def save(self, folder: str) -> None:
         os.makedirs(folder, exist_ok=True)
@@ -96,6 +99,46 @@ def _seen_info(row: dict) -> dict:
             "at": (row.get("loaded_at") or "")[:10], "name": row.get("name") or ""}
 
 
+def process_item(store: Store, i: int, path: str, base: str, opts: Options, ocr, cache, custom,
+                 cancel: threading.Event, inplace: bool = False) -> Item:
+    """Прочитать один файл и найти его договор (в карточки ещё не пишет)."""
+    rel = os.path.relpath(path, base)
+    it = Item(idx=i, rel=rel, name=os.path.basename(path), path=path, inplace=inplace)
+    try:
+        it.sha = file_sha256(path)
+        prior = store.doc_by_sha(it.sha)
+        if prior:
+            it.status, it.seen = "seen", _seen_info(prior)
+            it.note = "Этот файл уже разобран"
+            return it
+        res = _process(path, base, opts, ocr, cache, custom, cancel)
+        if res.error:
+            it.status, it.note = "error", res.error
+            return it
+        a = res.analysis
+        it.pages = res.page_count
+        it.doc_key, it.doc_label, it.group = a.doc_key, a.doc_label, a.group
+        it.text_hash = a.text_hash
+        it.reasons = list(res.reasons)
+        it.fields = matcher.display_fields(a)
+        it.facts = matcher.facts_from(a)
+        it.event = list(matcher.doc_event(a, it.name))
+        prior = store.doc_by_text_hash(a.text_hash)
+        if prior:
+            it.status, it.seen = "seen", _seen_info(prior)
+            it.note = "Такой же текст уже разобран (другой файл)"
+            return it
+        m = matcher.match_document(store, a)
+        it.status, it.candidates = m["status"], m["candidates"]
+        if m["status"] == "ok":
+            it.chosen = m["candidates"][0]["id"]
+    except Cancelled:
+        it.status, it.note = "error", "Остановлено пользователем"
+    except Exception as e:  # один файл не должен остановить всю пачку
+        it.status, it.note = "error", f"Непредвиденная ошибка: {type(e).__name__}: {e}"
+    return it
+
+
 def read_batch(store: Store, batch: Batch, cache_path: str, workers: int | None = None,
                progress: Callable[[int, int, str], None] | None = None, cancel: threading.Event | None = None,
                custom_fields_path: str | None = None, use_ocr: bool = True) -> Batch:
@@ -125,41 +168,7 @@ def read_batch(store: Store, batch: Batch, cache_path: str, workers: int | None 
         progress(0, total, "")
 
     def work(i: int, path: str) -> Item:
-        rel = os.path.relpath(path, batch.dir)
-        it = Item(idx=i, rel=rel, name=os.path.basename(path), path=path)
-        try:
-            it.sha = file_sha256(path)
-            prior = store.doc_by_sha(it.sha)
-            if prior:
-                it.status, it.seen = "seen", _seen_info(prior)
-                it.note = "Этот файл уже разобран"
-                return it
-            res = _process(path, batch.dir, opts, ocr, cache, custom, cancel)
-            if res.error:
-                it.status, it.note = "error", res.error
-                return it
-            a = res.analysis
-            it.pages = res.page_count
-            it.doc_key, it.doc_label, it.group = a.doc_key, a.doc_label, a.group
-            it.text_hash = a.text_hash
-            it.reasons = list(res.reasons)
-            it.fields = matcher.display_fields(a)
-            it.facts = matcher.facts_from(a)
-            it.event = list(matcher.doc_event(a, it.name))
-            prior = store.doc_by_text_hash(a.text_hash)
-            if prior:
-                it.status, it.seen = "seen", _seen_info(prior)
-                it.note = "Такой же текст уже разобран (другой файл)"
-                return it
-            m = matcher.match_document(store, a)
-            it.status, it.candidates = m["status"], m["candidates"]
-            if m["status"] == "ok":
-                it.chosen = m["candidates"][0]["id"]
-        except Cancelled:
-            it.status, it.note = "error", "Остановлено пользователем"
-        except Exception as e:  # один файл не должен остановить всю пачку
-            it.status, it.note = "error", f"Непредвиденная ошибка: {type(e).__name__}: {e}"
-        return it
+        return process_item(store, i, path, batch.dir, opts, ocr, cache, custom, cancel)
 
     ex = ThreadPoolExecutor(max_workers=max(1, opts.workers))
     try:
@@ -200,27 +209,24 @@ def read_batch(store: Store, batch: Batch, cache_path: str, workers: int | None 
     return batch
 
 
-def write_batch(store: Store, batch: Batch, docs_dir: str) -> dict:
-    """Записать привязанные документы в карточки и пересчитать сроки."""
+def write_items(store: Store, items: list[Item], recalc: bool = True) -> dict:
+    """Записать привязанные документы в карточки. Копии документов не создаются:
+    для файлов из подключённой папки запоминается путь, загруженная копия после записи удаляется."""
     user, now = current_user(), datetime.now().isoformat(timespec="seconds")
     touched: set[int] = set()
     n_docs = 0
-    for it in batch.items:
+    for it in items:
         if it.written or it.skipped or it.chosen is None or it.status in ("seen",):
             continue
         ext = os.path.splitext(it.name)[1].lower()
-        dst_dir = os.path.join(docs_dir, it.sha[:2])
-        os.makedirs(dst_dir, exist_ok=True)
-        dst = os.path.join(dst_dir, it.sha + ext)
-        if not os.path.exists(dst):
-            shutil.copy2(it.path, dst)
+        stored = it.path if it.inplace else None
         with store.write() as c:
             cur = c.execute(
                 "INSERT OR IGNORE INTO documents(contract_id,sha,text_hash,name,ext,doc_key,doc_label,grp,reasons,fields,"
                 "loaded_by,loaded_at,stored,pages) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (it.chosen, it.sha, it.text_hash, it.name, ext, it.doc_key, it.doc_label, it.group,
                  json.dumps(it.reasons, ensure_ascii=False), json.dumps(it.fields, ensure_ascii=False),
-                 user, now, dst, it.pages))
+                 user, now, stored, it.pages))
             if cur.rowcount == 0:
                 it.written = True
                 continue
@@ -231,6 +237,11 @@ def write_batch(store: Store, batch: Batch, docs_dir: str) -> dict:
                 c.execute("INSERT INTO events(contract_id,date,text,doc_id) VALUES(?,?,?,?)",
                           (it.chosen, it.event[0], it.event[1], doc_id))
         it.written = True
+        if not it.inplace:
+            try:
+                os.remove(it.path)
+            except OSError:
+                pass
         touched.add(it.chosen)
         n_docs += 1
     if touched:
@@ -242,8 +253,18 @@ def write_batch(store: Store, batch: Batch, docs_dir: str) -> dict:
                     f"UPDATE contracts SET last_doc_at=?, last_doc_by=?, docs_count=(SELECT COUNT(*) FROM documents "
                     f"WHERE contract_id=contracts.id) WHERE id IN ({','.join('?' * len(part))})",
                     [date.today().isoformat(), user] + part)
-        recalc_contracts(store, ids)
+        if recalc:
+            recalc_contracts(store, ids)
+    return {"documents": n_docs, "contracts": len(touched), "ids": sorted(touched)}
+
+
+def write_batch(store: Store, batch: Batch, docs_dir: str | None = None) -> dict:
+    """Записать привязанные документы пачки в карточки и пересчитать сроки."""
+    res = write_items(store, batch.items)
+    res.pop("ids", None)
     batch.summary = batch.counts()
     if all(i.written or i.skipped or i.status == "seen" for i in batch.items):
         batch.state = "written"
-    return {"documents": n_docs, "contracts": len(touched)}
+        if not batch.source:  # загруженные копии больше не нужны
+            shutil.rmtree(batch.dir, ignore_errors=True)
+    return res

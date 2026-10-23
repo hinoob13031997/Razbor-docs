@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import batch as B
-from . import crm, matcher, rules, templates
+from . import crm, folders, matcher, rules, templates
 from .actions import next_actions
 from .paths import _bundle_dir, app_dir
 from .store import Store
@@ -144,6 +144,8 @@ class Ctx:
             return None
         with self.lock:
             b = self.batch_cache.get(bid)
+            if b is not None and b.source and b.state == "reading":
+                b = None  # пачку пополняет чтение подключённой папки: берём свежую с диска
             if b is None:
                 p = self.batches / f"{bid}.json"
                 if not p.is_file():
@@ -166,12 +168,32 @@ class Ctx:
         return rules.load_params(self.store)
 
     def recalc_if_new_day(self) -> None:
+        """При запуске: пересчитать сроки на сегодня и проверить новые файлы в подключённых папках."""
         today = date.today().isoformat()
-        if self.store.scalar("SELECT COUNT(*) FROM contracts") and self.store.get_setting("recalc_day") != today:
-            self.run_job(Job("recalc", "Пересчёт сроков на сегодня"),
-                         lambda j: {"n": rules.recalc_contracts(
-                             self.store, progress=lambda n, m: (setattr(j, "done", n), setattr(j, "msg", m)),
-                             cancel=j.cancel)})
+        need_recalc = bool(self.store.scalar("SELECT COUNT(*) FROM contracts")) and \
+            self.store.get_setting("recalc_day") != today
+        sources = [s["id"] for s in folders.list_sources(self.store) if s["available"]] \
+            if self.store.get_setting("auto_scan", "1") == "1" else []
+        if not need_recalc and not sources:
+            return
+
+        def run(j: Job) -> dict:
+            if need_recalc:
+                j.title = "Пересчёт сроков на сегодня"
+                rules.recalc_contracts(self.store, progress=lambda n, m: (setattr(j, "done", n), setattr(j, "msg", m)),
+                                       cancel=j.cancel)
+            out = {}
+            for sid in sources:
+                j.title = "Проверка новых файлов в подключённых папках"
+                out[sid] = self.scan(j, sid)
+            return out
+        self.run_job(Job("startup", "Подготовка"), run)
+
+    def scan(self, j: Job, sid: int) -> dict:
+        def prog(n: int, t: int, name: str) -> None:
+            j.done, j.total, j.msg = n, t, name
+        return folders.scan_source(self.store, sid, str(self.batches), prog, j.cancel,
+                                   custom_fields_path=str(app_dir() / "polya.json"))
 
 
 # ---------------------------------------------------------------- вспомогательное
@@ -248,7 +270,7 @@ def _contract_card(ctx: Ctx, cid: int) -> dict | None:
 
 def _batch_out(b: B.Batch, ctx: Ctx, with_items: bool = True) -> dict:
     out = {"id": b.id, "state": b.state, "created": b.created, "counts": b.counts(), "notes": b.notes[:10],
-           "total": len(b.items)}
+           "total": len(b.items), "auto": b.auto, "source": b.source}
     if with_items:
         ids = {i.chosen for i in b.items if i.chosen} | {c["id"] for i in b.items for c in i.candidates}
         info = {}
@@ -259,7 +281,7 @@ def _batch_out(b: B.Batch, ctx: Ctx, with_items: bool = True) -> dict:
                 info[r["id"]] = r
         p, today = ctx.params(), date.today()
         items = []
-        for i in b.items:
+        for i in list(b.items):
             ch = info.get(i.chosen) if i.chosen else None
             items.append({
                 "idx": i.idx, "rel": i.rel, "name": i.name, "status": i.status, "doc_label": i.doc_label,
@@ -557,6 +579,8 @@ class Handler(BaseHTTPRequestHandler):
                     return {"batch": b.id, "counts": b.counts()}
                 ctx.run_job(job, run)
                 return self._json(job.info())
+            if sub in ("pick", "skip", "write") and b.state == "reading":
+                return self._err(409, "Папка ещё читается. Подтверждать можно после окончания чтения.")
             if sub == "pick" and method == "POST":
                 d = self._jbody()
                 it = next((i for i in b.items if i.idx == d.get("idx")), None)
@@ -610,7 +634,42 @@ class Handler(BaseHTTPRequestHandler):
             r = st.one("SELECT stored, name FROM documents WHERE id=?", (int(parts[1]),))
             if not r:
                 return self._err(404, "Документ не найден")
+            if not r["stored"] or not os.path.isfile(r["stored"]):
+                return self._err(404, "Копия документа в программе не хранится, а исходный файл недоступен")
             return self._file(r["stored"], r["name"], q.get("download") == "1")
+
+        # ---- подключённые папки
+        if head == "sources":
+            if len(parts) == 1:
+                return self._json({"sources": folders.list_sources(st),
+                                   "auto_scan": st.get_setting("auto_scan", "1") == "1"})
+            if parts[1] == "add" and method == "POST":
+                try:
+                    src = folders.add_source(st, str(self._jbody().get("path", "")))
+                except ValueError as e:
+                    return self._err(400, str(e))
+                if ctx.busy():
+                    return self._json({"source": src, "job": None,
+                                       "note": "Папка подключена. Чтение начнётся, когда закончится текущая задача: "
+                                               "нажмите «Проверить новые файлы» позже."})
+                job = ctx.run_job(Job("scan", "Чтение подключённой папки"), lambda j: ctx.scan(j, src["id"]))
+                return self._json({"source": src, "job": job.info()})
+            if parts[1] == "pick" and method == "POST":
+                return self._json({"path": folders.pick_folder()})
+            if parts[1] == "auto" and method == "POST":
+                st.set_setting("auto_scan", "1" if self._jbody().get("on") else "0")
+                return self._json({"ok": True})
+            if len(parts) == 3 and parts[1].isdigit() and method == "POST":
+                sid = int(parts[1])
+                if parts[2] == "scan":
+                    if ctx.busy():
+                        return self._err(409, "Сейчас выполняется другая задача. Дождитесь её окончания.")
+                    job = ctx.run_job(Job("scan", "Чтение подключённой папки"), lambda j: ctx.scan(j, sid))
+                    return self._json(job.info())
+                if parts[2] == "remove":
+                    folders.remove_source(st, sid)
+                    return self._json({"ok": True})
+            return self._err(404, "Нет такого действия")
 
         # ---- сроки и ИП
         if head == "deadlines":

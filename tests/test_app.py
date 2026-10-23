@@ -44,7 +44,11 @@ check(rules.fresh_level(today.isoformat(), today, rules.DEFAULTS)["level"] == "f
 check(rules.fresh_level("2020-01-01", today, rules.DEFAULTS)["level"] == "stale", "свежесть: давно устарело")
 
 ocr = OcrEngine(lang="rus+eng")
-b = batch.Batch(id="t1", dir=os.path.join(ROOT, "tests", "samples"), created="x")
+import shutil  # noqa: E402
+
+work = os.path.join(tmp, "upload")
+shutil.copytree(os.path.join(ROOT, "tests", "samples"), work)
+b = batch.Batch(id="t1", dir=work, created="x")
 batch.read_batch(st, b, os.path.join(tmp, "cache.sqlite"), use_ocr=ocr.available)
 byname = {i.name: i for i in b.items}
 num = lambda n: (st.contract(byname[n].chosen) or {}).get("number") if byname[n].chosen else None  # noqa: E731
@@ -60,10 +64,32 @@ c = st.one("SELECT * FROM contracts WHERE number='КД-100200'")
 check(c["docs_count"] >= 3 and c["last_doc_at"] == today.isoformat(), "в карточке видно, когда разбирали")
 if ocr.available:
     check(c["sit"] == "ip_end" and c["next_dl_name"].startswith("Повторно"), "ИП окончено: срок повторного предъявления")
+check(not os.path.exists(os.path.join(work, "01_sud_prikaz.pdf")), "копия загруженного файла после записи удалена")
+check(st.scalar("SELECT COUNT(*) FROM documents WHERE stored IS NOT NULL") == 0, "копии документов в программе не хранятся")
 b2 = batch.Batch(id="t2", dir=os.path.join(ROOT, "tests", "samples"), created="x")
 batch.read_batch(st, b2, os.path.join(tmp, "cache.sqlite"), use_ocr=False)
 check(byname["01_sud_prikaz.pdf"].written and {i.name: i for i in b2.items}["01_sud_prikaz.pdf"].status == "seen",
       "повторная загрузка того же файла: уже разобран")
+# подключённая папка: файлы читаются на месте
+from razbor import folders  # noqa: E402
+
+fold = os.path.join(tmp, "folder")
+shutil.copytree(os.path.join(ROOT, "tests", "samples"), fold)
+st2 = Store(os.path.join(tmp, "r2.sqlite"))
+crm.import_crm(st2, os.path.join(tmp, "crm.csv"))
+rules.recalc_contracts(st2)
+src = folders.add_source(st2, fold)
+r1 = folders.scan_source(st2, src["id"], os.path.join(tmp, "batches"), lambda *a: None, __import__("threading").Event(),
+                         use_ocr=ocr.available)
+check(r1["new"] == 20 and r1["auto"] >= 5, f"папка: прочитано {r1['new']}, записано сразу {r1['auto']}")
+check(st2.scalar("SELECT COUNT(*) FROM documents WHERE stored LIKE ?", (fold + "%",)) == r1["auto"],
+      "папка: в карточке путь к исходному файлу, без копии")
+check(os.path.exists(os.path.join(fold, "01_sud_prikaz.pdf")), "папка: исходные файлы на месте")
+r2 = folders.scan_source(st2, src["id"], os.path.join(tmp, "batches"), lambda *a: None, __import__("threading").Event())
+check(r2["new"] == 0, "папка: повторная проверка не читает старые файлы")
+shutil.copy(os.path.join(ROOT, "tests", "samples", "07_kreditny_dogovor.pdf"), os.path.join(fold, "новый.pdf"))
+r3 = folders.scan_source(st2, src["id"], os.path.join(tmp, "batches"), lambda *a: None, __import__("threading").Event())
+check(r3["new"] == 1 and r3["seen"] == 1, "папка: новый файл найден (и опознан как повтор)")
 cid = c["id"]
 t = templates.render(st, cid, "ip_new")
 check(t["filled"] > 5 and any(m["key"] == "org" for m in t["missing"]), "шаблон: подставлено и показано, чего не хватает")
