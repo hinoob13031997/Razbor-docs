@@ -1,0 +1,52 @@
+name: Сборка для Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установка Tesseract
+        run: choco install tesseract -y --no-progress
+
+      - name: Установка библиотек
+        run: pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Языковые данные (rus, eng, osd)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force tessdata_dl | Out-Null
+          foreach ($l in "rus","eng","osd") {
+            Invoke-WebRequest "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$l.traineddata" -OutFile "tessdata_dl/$l.traineddata"
+          }
+
+      - name: Проверка на тестовых документах (до сборки)
+        env:
+          RAZBOR_TESSERACT: C:\Program Files\Tesseract-OCR\tesseract.exe
+          RAZBOR_TESSDATA: ${{ github.workspace }}\tessdata_dl
+        run: python tests/test_samples.py tests/samples --workers 2
+
+      - name: Сборка
+        run: python tools/build_windows.py --tessdata tessdata_dl
+
+      - name: Проверка готовой программы
+        shell: pwsh
+        run: |
+          Start-Process -Wait -FilePath "dist\RazborDocs\RazborDocs.exe" -ArgumentList "--cli","tests\samples","smoke.xlsx","--workers","2"
+          if (-not (Test-Path smoke.xlsx)) { throw "Готовая программа не создала Excel" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RazborDocs
+          path: dist/RazborDocs.zip
