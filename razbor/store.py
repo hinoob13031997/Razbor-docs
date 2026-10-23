@@ -98,6 +98,10 @@ class Store:
         self._write_lock = threading.RLock()
         with self.write() as c:
             c.executescript(SCHEMA)
+            have = {r[1] for r in c.execute("PRAGMA table_info(contracts)")}
+            for col, typ in (("next_action", "TEXT"), ("next_action_level", "INTEGER")):
+                if col not in have:  # база от прошлой версии
+                    c.execute(f"ALTER TABLE contracts ADD COLUMN {col} {typ}")
 
     # ------------------------------------------------------------ соединения
     def conn(self) -> sqlite3.Connection:
@@ -161,7 +165,8 @@ class Store:
         use = [k for k in CRM_COLS if k in rows[0]]  # обновляем только колонки, которые есть в выгрузке
         cols = ["number_norm"] + use
         ph = ",".join("?" * len(cols))
-        upd = ",".join(f"{c}=excluded.{c}" for c in use if c != "number")
+        # пустое значение в новой строке не затирает известное (несколько строк на договор, частичные выгрузки)
+        upd = ",".join(f"{c}=COALESCE(excluded.{c}, contracts.{c})" for c in use if c != "number")
         sql = f"INSERT INTO contracts({','.join(cols)}) VALUES({ph}) ON CONFLICT(number_norm) DO UPDATE SET {upd}"
         with self.write() as c:
             before = c.execute("SELECT COUNT(*) FROM contracts").fetchone()[0]
@@ -218,7 +223,7 @@ class Store:
         total = self.scalar(f"SELECT COUNT(*) FROM contracts{w}", args)
         rows = self.q(
             "SELECT id, number, fio, kind, debt, principal_left, sit, next_dl_date, next_dl_name, ip_state, ip_start, ip_end,"
-            " ip_months, ip_stalled, last_doc_at, last_doc_by, docs_count FROM contracts" + w +
+            " ip_months, ip_stalled, last_doc_at, last_doc_by, docs_count, next_action, next_action_level FROM contracts" + w +
             " ORDER BY next_dl_date IS NULL, next_dl_date, id LIMIT ? OFFSET ?", args + [size, (max(1, page) - 1) * size])
         return {"total": total, "rows": rows}
 

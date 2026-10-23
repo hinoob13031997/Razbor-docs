@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import batch as B
 from . import crm, matcher, rules, templates
+from .actions import next_actions
 from .paths import _bundle_dir, app_dir
 from .store import Store
 
@@ -230,6 +231,8 @@ def _contract_card(ctx: Ctx, cid: int) -> dict | None:
     dls = ctx.store.deadlines_for(cid)
     for x in dls:
         x["days"] = (date.fromisoformat(x["date"]) - today).days
+    checks = matcher.compare_with_crm(c, docs)
+    acts = next_actions(c, facts, dls, rules.fresh_level(c.get("last_doc_at"), today, p)["level"], p, today, checks)
     rec = templates.RECOMMEND.get(c.get("sit") or "pre")
     if c.get("sit") == "ip" and c.get("ip_stalled"):
         rec = "ip_new"
@@ -239,7 +242,7 @@ def _contract_card(ctx: Ctx, cid: int) -> dict | None:
                                               "ip_months", "ip_stalled", "docs_count", "last_doc_at", "last_doc_by")},
             "sit_label": row["sit_label"], "sit_cls": row["sit_cls"], "fresh": row["fresh"], "fields": fields,
             "deadlines": dls, "events": ctx.store.events_for(cid), "documents": docs, "facts": facts,
-            "checks": matcher.compare_with_crm(c, docs), "recommend": rec, "params": p,
+            "checks": checks, "actions": acts, "recommend": rec, "params": p,
             "manual": ctx.store.manual_for(cid)}
 
 

@@ -209,8 +209,11 @@ function uploadStream(path, file) {
 function showImportResult(r) {
   openModal([
     h("h2", null, "Портфель загружен"),
-    h("p", null, "Строк в файле: ", h("b", null, num(r.rows)), ". Добавлено договоров: ", h("b", null, num(r.added)), ", обновлено: ", h("b", null, num(r.updated)),
-      r.skipped ? ", пропущено без номера договора: " + num(r.skipped) : "", "."),
+    h("p", null, "Строк в файле: ", h("b", null, num(r.rows)), r.tables > 1 ? " (листов: " + r.tables + ")" : "", ". Договоров в файле: ", h("b", null, num(r.contracts)),
+      ". Новых: ", h("b", null, num(r.added)), ", обновлено: ", h("b", null, num(r.updated)),
+      r.skipped ? ". Пропущено строк без номера договора: " + num(r.skipped) : "", "."),
+    r.rows > r.contracts ? h("p", { class: "small muted" }, "На один договор приходится несколько строк: они объединены, пустые ячейки не затирают уже известные данные.") : null,
+    r.errors && r.errors.length ? h("p", { class: "small", style: "color:#7C4300" }, "Пропущено: " + r.errors.join("; ")) : null,
     h("p", { class: "muted small" }, "Распознанные колонки: " + (r.recognized || []).join(", ")),
     r.unmapped && r.unmapped.length ? h("p", { class: "small" }, "Не использованы (неизвестные колонки): " + r.unmapped.join(", ")) : null,
     r.missing && r.missing.length ? h("div", { class: "banner amb" }, h("div", null, h("b", null, "Не хватает колонок"), "Без них часть функций работать не будет: " + r.missing.join(", "))) : null,
@@ -259,6 +262,7 @@ async function Dash(_, __, s) {
 }
 
 // ------------------------------------------------------------------ Портфель
+const SIT_SHORT = { ip: "Идёт ИП", ip_end: "ИП окончено", court: "Есть решение", pre: "Досудебная", expired: "Давность истекла", death: "Умер", bankr: "Банкрот", liq: "Ликвидирована" };
 const PF_FILTERS = [["", "Все"], ["urgent", "Срочные сроки"], ["stalled", "ИП без движения"], ["death", "Умер"], ["bankr", "Банкротство"], ["ip_end", "ИП окончено"], ["ip", "Идёт ИП"], ["court", "Есть решение"], ["expired", "Давность истекла"], ["pre", "Досудебная"]];
 
 async function Portfolio(_, params) {
@@ -279,12 +283,13 @@ async function Portfolio(_, params) {
     const pages = Math.ceil(r.total / 50);
     return h("div", null,
       h("div", { class: "scroll" }, h("table", { class: "tbl" },
-        h("thead", null, h("tr", null, ["Договор", "Должник", "Сумма долга", "Ситуация", "Ближайший срок", "Разбор документов"].map((t) => h("th", null, t)))),
+        h("thead", null, h("tr", null, ["Договор", "Должник", "Сумма долга", "Ситуация", "Что делать", "Ближайший срок", "Разбор документов"].map((t) => h("th", null, t)))),
         h("tbody", null, r.rows.map((c) => h("tr", { class: "clk", onclick: () => (location.hash = "#/card/" + c.id) },
           h("td", null, h("a", { class: "link", href: "#/card/" + c.id, onclick: (e) => e.stopPropagation() }, c.number)),
           h("td", null, c.fio || "—", c.ip_stalled ? h("div", null, chip("ИП без движения", "amb")) : null),
           h("td", { class: "r" }, money(c.debt)),
-          h("td", null, chip(c.sit_label, c.sit_cls)),
+          h("td", null, chip(SIT_SHORT[c.sit] || c.sit_label, c.sit_cls)),
+          h("td", { class: "small", style: "min-width:220px" }, c.next_action ? [h("span", { class: "dot " + (["red", "amb", "blue", "gray"][c.next_action_level] || "gray") }), c.next_action] : "—"),
           h("td", null, c.next_dl_name ? [h("div", null, c.next_dl_name), dlChip(c.dl_days, c.next_dl_date)] : "—"),
           h("td", null, freshChip(c.fresh), c.fresh.by ? h("div", { class: "small muted" }, c.fresh.by) : null)))))),
       h("div", { class: "row sp pad" }, h("span", { class: "muted" }, "Найдено: " + num(r.total)),
@@ -320,6 +325,29 @@ function fieldVal(f) {
   return String(f.value);
 }
 
+function actionsBlock(d) {
+  const c = d.contract;
+  const acts = d.actions || [];
+  if (!acts.length) return null;
+  const [first, ...rest] = acts;
+  const btn = (a, primary) => a.tpl ? h("a", { class: "btn" + (primary ? " btn-p" : " btn-s"), href: "#/tpl/" + c.id + "/" + a.tpl }, "Подготовить документ")
+    : a.go === "batch" ? h("a", { class: "btn" + (primary ? " btn-p" : " btn-s"), href: "#/batch" }, "Загрузить документы") : null;
+  return h("div", { class: "card mb todo" },
+    h("div", { class: "row sp" }, h("h2", null, "Что делать"), h("span", { class: "small muted" }, "Подсказка программы. Решение принимает юрист.")),
+    h("div", { class: "todo-main " + first.cls },
+      h("div", null,
+        h("div", { class: "row" }, chip(first.label, first.cls), first.when ? h("b", null, first.when) : null),
+        h("div", { class: "todo-t" }, first.title),
+        h("div", { class: "small muted" }, first.why)),
+      btn(first, true)),
+    rest.map((a, i) => h("div", { class: "todo-row" },
+      h("span", { class: "todo-n" }, String(i + 2)),
+      h("div", { style: "flex:1;min-width:0" },
+        h("div", null, h("b", null, a.title), " ", chip(a.label, a.cls), a.when ? h("span", { class: "small muted" }, "  " + a.when) : null),
+        h("div", { class: "small muted" }, a.why)),
+      btn(a, false))));
+}
+
 async function Card(parts) {
   const d = await api("contract/" + parts[0]);
   const c = d.contract;
@@ -339,8 +367,9 @@ async function Card(parts) {
   return h("div", null,
     h("div", { class: "row mb" }, h("a", { class: "link", href: "#/portfolio" }, "← К портфелю")),
     header(c.number, c.fio + (c.kind ? " · " + c.kind : ""), chip(d.sit_label, d.sit_cls),
-      d.recommend ? h("a", { class: "btn btn-p", href: "#/tpl/" + c.id + "/" + d.recommend }, "Подготовить документ") : null),
+      null),
     freshBanner(d.fresh),
+    actionsBlock(d),
     d.checks.length ? h("div", { class: "banner amb" }, h("div", null, h("b", null, "Расхождения между CRM и документами"), h("ul", { style: "margin:4px 0 0;padding-left:18px" }, d.checks.map((t) => h("li", null, t))))) : null,
     h("div", { class: "grid g2" },
       h("div", { class: "card" }, h("h2", null, "Сроки"),

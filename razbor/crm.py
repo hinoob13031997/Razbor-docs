@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import os
@@ -196,8 +197,10 @@ def parse_inn(v) -> str | None:
     return s if len(s) in (10, 12) else (s or None)
 
 
-def parse_flag(v) -> int:
+def parse_flag(v) -> int | None:
     s = str(v if v is not None else "").strip().lower()
+    if not s:
+        return None  # пусто: не затирать уже известное значение
     return 1 if s in ("1", "да", "true", "yes", "y", "банкрот", "x", "+") else 0
 
 
@@ -206,8 +209,8 @@ def parse_flag(v) -> int:
 def _iter_csv(path: str) -> Iterator[list]:
     raw = open(path, "rb").read(65536)
     enc = "utf-8-sig"
-    try:
-        raw.decode("utf-8")
+    try:  # кусок файла может оборваться посреди буквы: такой обрыв не считается ошибкой
+        codecs.getincrementaldecoder("utf-8")().decode(raw, final=False)
     except UnicodeDecodeError:
         enc = "cp1251"
     sample = raw.decode(enc, errors="replace")
@@ -221,39 +224,49 @@ def _iter_csv(path: str) -> Iterator[list]:
             yield row
 
 
-def _iter_xlsx(path: str) -> Iterator[list]:
+def _sheet_score(rows: list) -> int:
+    return max((sum(1 for c in r if norm_header(c) in _ALIAS_INDEX) for r in rows), default=0)
+
+
+def _iter_xlsx_tables(path: str) -> Iterator[tuple[str, Iterator[list]]]:
+    """Все листы книги, на которых есть шапка портфеля (данные можно разбить по листам)."""
     import openpyxl
 
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
-        best = None
+        good = []
         for ws in wb.worksheets:
             head = []
             for i, row in enumerate(ws.iter_rows(values_only=True)):
                 head.append(row)
                 if i >= 12:
                     break
-            score = max((sum(1 for c in r if norm_header(c) in _ALIAS_INDEX) for r in head), default=0)
-            if best is None or score > best[0]:
-                best = (score, ws.title)
-            if score >= 3:
-                break
-        ws = wb[best[1]] if best else wb.worksheets[0]
-        for row in ws.iter_rows(values_only=True):
-            yield list(row)
+            if _sheet_score(head) >= 2:
+                good.append(ws.title)
+        if not good:
+            good = [wb.worksheets[0].title]
+        for title in good:
+            yield title, (list(r) for r in wb[title].iter_rows(values_only=True))
     finally:
         wb.close()
 
 
-def open_rows(path: str) -> Iterator[list]:
+def open_tables(path: str) -> Iterator[tuple[str, Iterator[list]]]:
+    """(название, строки) для каждой таблицы файла: лист Excel или весь CSV."""
     ext = os.path.splitext(path)[1].lower()
     if ext in (".xlsx", ".xlsm"):
-        return _iter_xlsx(path)
+        return _iter_xlsx_tables(path)
     if ext in (".csv", ".txt", ".tsv"):
-        return _iter_csv(path)
+        return iter([(os.path.basename(path), _iter_csv(path))])
     if ext == ".xls":
         raise ValueError("Старый формат .xls не читается. Сохраните выгрузку как .xlsx или .csv.")
     raise ValueError(f"Неизвестный формат файла: {ext}")
+
+
+def open_rows(path: str) -> Iterator[list]:
+    for _, rows in open_tables(path):
+        return rows
+    return iter([])
 
 
 def map_headers(headers: list) -> tuple[dict[int, str], list[str]]:
@@ -306,62 +319,79 @@ def build_contract(values: list, mapping: dict[int, str]) -> dict | None:
 
 def import_crm(store: Store, path: str, progress: Callable[[int, str], None] | None = None,
                cancel=None, chunk: int = 5000) -> dict:
-    it = open_rows(path)
-    buf: list[list] = []
-    header_idx, best = 0, -1
-    for i, row in enumerate(it):
-        buf.append(row)
-        sc = sum(1 for c in row if norm_header(c) in _ALIAS_INDEX)
-        if sc > best:
-            best, header_idx = sc, i
-        if i >= 14:
-            break
-    if best < 2:
-        found = [str(c) for c in (buf[0] if buf else []) if c][:12]
-        raise ValueError("В файле не найдены колонки портфеля. Первая строка: " + ", ".join(found) +
-                         ". Нужны хотя бы «Номер договора» и «ФИО».")
-    headers = buf[header_idx]
-    mapping, unknown = map_headers(headers)
-    if "number" not in mapping.values():
-        raise ValueError("Не найдена колонка с номером договора («Номер договора» или number_dog).")
-
+    """Загрузить выгрузку CRM. Одному договору может соответствовать несколько строк (блоки суда, ИП и т. п.):
+    они сливаются, пустые ячейки не затирают уже известные значения. Листов Excel может быть несколько."""
     rows_total = added = updated = skipped = 0
-    batch_rows: list[dict] = []
-    batch_norm: list[str] = []
+    seen: set[int] = set()
+    found_fields: set[str] = set()
+    unknown_all: list[str] = []
+    tables_used = 0
+    errors: list[str] = []
 
-    def flush() -> None:
-        nonlocal added, updated, batch_rows, batch_norm
-        if batch_rows:
-            a, u = store.upsert_contracts(batch_rows, batch_norm)
-            added += a
-            updated += u
-            batch_rows, batch_norm = [], []
+    for title, it in open_tables(path):
+        buf: list[list] = []
+        header_idx, best = 0, -1
+        for i, row in enumerate(it):
+            buf.append(row)
+            sc = sum(1 for c in row if norm_header(c) in _ALIAS_INDEX)
+            if sc > best:
+                best, header_idx = sc, i
+            if i >= 14:
+                break
+        if best < 2:
+            found = [str(c) for c in (buf[0] if buf else []) if c][:12]
+            errors.append(f"«{title}»: не найдены колонки портфеля (первая строка: {', '.join(found)})")
+            continue
+        mapping, unknown = map_headers(buf[header_idx])
+        if "number" not in mapping.values():
+            errors.append(f"«{title}»: нет колонки с номером договора")
+            continue
+        tables_used += 1
+        found_fields |= set(mapping.values())
+        unknown_all += [u for u in unknown if u not in unknown_all]
+        batch_rows: list[dict] = []
+        batch_norm: list[str] = []
 
-    def feed(values: list) -> None:
-        nonlocal rows_total, skipped
-        if not any(v not in (None, "") for v in values):
-            return
-        rows_total += 1
-        rec = build_contract(values, mapping)
-        if rec is None:
-            skipped += 1
-            return
-        batch_rows.append(rec)
-        batch_norm.append(norm_number(rec["number"]))
-        if len(batch_rows) >= chunk:
-            flush()
-            if progress:
-                progress(rows_total, "Загружаю портфель")
-            if cancel is not None and cancel.is_set():
-                raise InterruptedError("Остановлено пользователем")
+        def flush() -> None:
+            nonlocal added, updated, batch_rows, batch_norm
+            if batch_rows:
+                a, u = store.upsert_contracts(batch_rows, batch_norm)
+                added += a
+                updated += u
+                batch_rows, batch_norm = [], []
 
-    for row in buf[header_idx + 1:]:
-        feed(row)
-    for row in it:
-        feed(row)
-    flush()
-    fields_found = sorted(set(mapping.values()))
-    missing = [FIELD_TITLES[f] for f in RECOMMENDED if f not in fields_found]
-    store.log_import(os.path.basename(path), rows_total, added, updated, skipped, unknown)
-    return {"rows": rows_total, "added": added, "updated": updated, "skipped": skipped,
-            "recognized": [FIELD_TITLES[f] for f in fields_found], "unmapped": unknown, "missing": missing}
+        def feed(values: list) -> None:
+            nonlocal rows_total, skipped
+            if not any(v not in (None, "") for v in values):
+                return
+            rows_total += 1
+            rec = build_contract(values, mapping)
+            if rec is None:
+                skipped += 1
+                return
+            nn = norm_number(rec["number"])
+            seen.add(hash(nn))
+            batch_rows.append(rec)
+            batch_norm.append(nn)
+            if len(batch_rows) >= chunk:
+                flush()
+                if progress:
+                    progress(rows_total, "Загружаю портфель")
+                if cancel is not None and cancel.is_set():
+                    raise InterruptedError("Остановлено пользователем")
+
+        for row in buf[header_idx + 1:]:
+            feed(row)
+        for row in it:
+            feed(row)
+        flush()
+
+    if not tables_used:
+        raise ValueError("В файле не найдены колонки портфеля. " + "; ".join(errors) +
+                         ". Нужны хотя бы «Номер договора» и «ФИО».")
+    missing = [FIELD_TITLES[f] for f in RECOMMENDED if f not in found_fields]
+    store.log_import(os.path.basename(path), rows_total, added, len(seen) - added, skipped, unknown_all)
+    return {"rows": rows_total, "contracts": len(seen), "added": added, "updated": len(seen) - added,
+            "skipped": skipped, "tables": tables_used, "errors": errors,
+            "recognized": [FIELD_TITLES[f] for f in sorted(found_fields)], "unmapped": unknown_all,
+            "missing": missing}

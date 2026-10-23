@@ -143,7 +143,8 @@ def derive(c: dict, facts: dict[str, str], p: dict[str, int], today: date) -> di
         sit = "pre"
 
     # --- сроки
-    if not decision and not ip_start and last_pay:
+    # давность показываем только на досудебной стадии: при смерти, банкротстве, ликвидации работают свои сроки
+    if not decision and not ip_start and last_pay and sit == "pre":
         base = last_pay + timedelta(days=1)
         when = add_years(base, p["limit_years"])
         add("limit", "Срок исковой давности",
@@ -199,8 +200,10 @@ def recalc_contracts(store: Store, ids: list[int] | None = None, today: date | N
     p = load_params(store)
     facts_all = store.all_facts()
     conn = store.conn()
+    from .actions import next_actions
+
     cols = ("id, kind, status, bankrupt, bankrupt_date, death_date, decision_date, fssp_date, fssp_actual, "
-            "last_pay_date")
+            "last_pay_date, estate_no, il_no, last_doc_at")
     if ids is None:
         cur = conn.execute(f"SELECT {cols} FROM contracts")
     else:
@@ -218,8 +221,13 @@ def recalc_contracts(store: Store, ids: list[int] | None = None, today: date | N
             res = derive(c, facts_all.get(c["id"], {}), p, today)
             first = res["deadlines"][0] if res["deadlines"] else None
             ip = res["ip"]
+            c2 = dict(c, sit=res["sit"], ip_stalled=ip["stalled"], ip_start=ip["start"])
+            acts = next_actions(c2, facts_all.get(c["id"], {}), res["deadlines"],
+                                fresh_level(c.get("last_doc_at"), today, p)["level"], p, today)
+            top = acts[0] if acts else None
             upd.append((res["sit"], first["date"] if first else None, first["name"] if first else None,
-                        ip["state"], ip["start"], ip["end"], ip["stalled"], ip["months"], c["id"]))
+                        ip["state"], ip["start"], ip["end"], ip["stalled"], ip["months"],
+                        top["title"] if top else None, top["level"] if top else None, c["id"]))
             done_ids.append(c["id"])
             for x in res["deadlines"]:
                 dl_rows.append((c["id"], x["kind"], x["name"], x["rule"], x["date"], x["src"]))
@@ -229,7 +237,7 @@ def recalc_contracts(store: Store, ids: list[int] | None = None, today: date | N
                 w.execute(f"DELETE FROM deadlines WHERE contract_id IN ({','.join('?' * len(part))})", part)
             w.executemany("INSERT INTO deadlines(contract_id,kind,name,rule,date,src) VALUES(?,?,?,?,?,?)", dl_rows)
             w.executemany("UPDATE contracts SET sit=?, next_dl_date=?, next_dl_name=?, ip_state=?, ip_start=?, "
-                          "ip_end=?, ip_stalled=?, ip_months=? WHERE id=?", upd)
+                          "ip_end=?, ip_stalled=?, ip_months=?, next_action=?, next_action_level=? WHERE id=?", upd)
         n += len(rows)
         if progress:
             progress(n, "Пересчитываю сроки")

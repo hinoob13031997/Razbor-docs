@@ -98,3 +98,12 @@ mark{background:#FFF176;padding:0 2px;border-radius:2px}
 a.fchip{text-decoration:none;color:inherit}
 a.fchip.on{color:#fff}
 a.cand{text-decoration:none;color:inherit}
+.todo h2{margin:0}
+.todo-main{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin:12px 0 4px;padding:14px 16px;border-radius:10px;border:1px solid #DDE2EA;border-left-width:5px}
+.todo-main.red{border-left-color:#C0392B;background:#FFF8F7}.todo-main.amb{border-left-color:#D88B00;background:#FFFBF2}.todo-main.blue{border-left-color:#1F5FBF;background:#F6F9FF}.todo-main.gray{border-left-color:#8A96A8;background:#F8F9FB}
+.todo-main .chip{font-size:12px}
+.todo-t{font-size:17px;font-weight:600;margin:6px 0 2px}
+.todo-row{display:flex;gap:12px;align-items:center;padding:10px 4px;border-top:1px solid #EBEEF3}
+.todo-n{width:24px;height:24px;flex:none;border-radius:50%;background:#EDF0F5;color:#465266;font-size:12px;font-weight:600;display:inline-flex;align-items:center;justify-content:center}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.dot.red{background:#C0392B}.dot.amb{background:#D88B00}.dot.blue{background:#1F5FBF}.dot.gray{background:#8A96A8}

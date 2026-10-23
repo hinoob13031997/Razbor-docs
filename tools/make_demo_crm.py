@@ -48,6 +48,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--rows", type=int, default=0)
+    ap.add_argument("--blocks", type=int, default=1, help="строк на договор (блоки суда, ФССП и т. п.)")
     a = ap.parse_args()
     rng = random.Random(1)
     with open(a.out, "w", newline="", encoding="utf-8-sig") as f:
@@ -57,7 +58,15 @@ def main() -> None:
             w.writerow(r)
         n = a.rows if a.rows else 16
         for i in range(n):
-            w.writerow(rnd_row(rng, i + 1))
+            r = rnd_row(rng, i + 1)
+            w.writerow(r)
+            for b in range(1, a.blocks):  # доп. строки того же договора: только часть колонок заполнена
+                extra = [r[0]] + [""] * (len(r) - 1)
+                if b == 1:
+                    extra[9], extra[10] = r[9] or f"2-{rng.randint(100, 9999)}/2023", "2023-0%d-15" % rng.randint(1, 9)
+                elif b == 2:
+                    extra[11], extra[12] = f"ФС {rng.randint(10**8, 10**9 - 1)}", "2024-0%d-10" % rng.randint(1, 9)
+                w.writerow(extra)
 
 
 if __name__ == "__main__":
