@@ -3,5 +3,8 @@ __pycache__/
 build/
 dist/
 *.sqlite
+*.sqlite-*
 *.xlsx
 polya.json
+Данные/
+demo_crm.csv

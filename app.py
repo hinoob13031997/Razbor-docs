@@ -1,6 +1,7 @@
-"""Точка входа: окно программы или командная строка.
+"""Точка входа: программа открывается в браузере на этом компьютере (или командная строка).
 
-Запуск окна:        python app.py
+Запуск программы:   python app.py
+Простое окно:       python app.py --gui   (только чтение папки в Excel)
 Командная строка:   python app.py --cli ПАПКА РЕЗУЛЬТАТ.xlsx [--no-ocr] [--max-pages 10] [--workers 4]
 """
 
@@ -13,19 +14,42 @@ import socket
 import sys
 
 
-def _block_network() -> None:
-    """Запретить программе любые сетевые соединения.
+_LOOP = ("127.0.0.1", "localhost", "::1", "", None)
 
-    В коде программы сети нет, но так это ещё и проверяемо: любая попытка
-    открыть соединение внутри программы завершится ошибкой.
+
+def _block_network() -> None:
+    """Запретить программе любые сетевые соединения, кроме обмена с собственным окном на этом же компьютере.
+
+    В коде программы выхода в сеть нет, но так это ещё и проверяемо: любая попытка соединиться
+    с другим адресом внутри программы завершится ошибкой.
     """
     def _refuse(*_a, **_k):
         raise OSError("Сетевые соединения в этой программе запрещены")
 
-    socket.socket.connect = _refuse  # type: ignore[method-assign]
-    socket.socket.connect_ex = _refuse  # type: ignore[method-assign]
-    socket.create_connection = _refuse  # type: ignore[assignment]
-    socket.getaddrinfo = _refuse  # type: ignore[assignment]
+    def _host(addr) -> str | None:
+        return addr[0] if isinstance(addr, tuple) and addr else None
+
+    orig_connect, orig_connect_ex = socket.socket.connect, socket.socket.connect_ex
+    orig_addrinfo = socket.getaddrinfo
+
+    def connect(self, addr):
+        if self.family in (socket.AF_INET, socket.AF_INET6) and _host(addr) not in _LOOP:
+            _refuse()
+        return orig_connect(self, addr)
+
+    def connect_ex(self, addr):
+        if self.family in (socket.AF_INET, socket.AF_INET6) and _host(addr) not in _LOOP:
+            _refuse()
+        return orig_connect_ex(self, addr)
+
+    def addrinfo(host, *a, **k):
+        if host not in _LOOP:
+            _refuse()
+        return orig_addrinfo(host, *a, **k)
+
+    socket.socket.connect = connect  # type: ignore[method-assign]
+    socket.socket.connect_ex = connect_ex  # type: ignore[method-assign]
+    socket.getaddrinfo = addrinfo  # type: ignore[assignment]
 
 
 def main(argv: list[str]) -> int:
@@ -66,9 +90,14 @@ def main(argv: list[str]) -> int:
         return 0
 
     try:
-        from razbor.gui import start_gui
+        if argv and argv[0] == "--gui":
+            from razbor.gui import start_gui
 
-        start_gui()
+            start_gui()
+            return 0
+        from razbor.server import run
+
+        return run(open_browser="--no-browser" not in argv)
     except Exception:  # в окне без консоли ошибку иначе не увидеть
         import traceback
 

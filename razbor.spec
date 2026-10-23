@@ -2,7 +2,7 @@
 # Сборка: python -m PyInstaller --noconfirm --clean razbor.spec
 from PyInstaller.utils.hooks import collect_all
 
-datas, binaries, hidden = [], [], []
+datas, binaries, hidden = [("web", "web")], [], []
 for pkg in ("pypdfium2", "pypdfium2_raw"):
     d, b, h = collect_all(pkg)
     datas += d
@@ -14,7 +14,7 @@ a = Analysis(
     pathex=["."],
     binaries=binaries,
     datas=datas,
-    hiddenimports=hidden + ["razbor.gui"],
+    hiddenimports=hidden + ["razbor.gui", "razbor.server", "razbor.batch", "razbor.store", "razbor.crm", "razbor.rules", "razbor.matcher", "razbor.templates", "razbor.docx_out", "sqlite3"],
     excludes=["numpy", "pandas", "matplotlib", "scipy", "cv2", "pytest", "IPython"],
 )
 pyz = PYZ(a.pure)

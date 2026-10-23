@@ -37,6 +37,12 @@ jobs:
           RAZBOR_TESSDATA: ${{ github.workspace }}\tessdata_dl
         run: python tests/test_samples.py tests/samples --workers 2
 
+      - name: Проверка программы (портфель, привязка, сроки, шаблоны, сервер)
+        env:
+          RAZBOR_TESSERACT: C:\Program Files\Tesseract-OCR\tesseract.exe
+          RAZBOR_TESSDATA: ${{ github.workspace }}\tessdata_dl
+        run: python tests/test_app.py
+
       - name: Сборка
         run: python tools/build_windows.py --tessdata tessdata_dl
 
@@ -45,6 +51,23 @@ jobs:
         run: |
           Start-Process -Wait -FilePath "dist\RazborDocs\RazborDocs.exe" -ArgumentList "--cli","tests\samples","smoke.xlsx","--workers","2"
           if (-not (Test-Path smoke.xlsx)) { throw "Готовая программа не создала Excel" }
+
+      - name: Проверка запуска готовой программы
+        shell: pwsh
+        run: |
+          $env:RAZBOR_DATA = "$PWD\smoke_data"
+          $p = Start-Process -PassThru -FilePath "dist\RazborDocs\RazborDocs.exe" -ArgumentList "--no-browser"
+          $f = "smoke_data\server.json"
+          for ($i = 0; $i -lt 40 -and -not (Test-Path $f); $i++) { Start-Sleep -Milliseconds 500 }
+          if (-not (Test-Path $f)) { throw "Программа не запустила экран" }
+          $j = Get-Content $f -Raw | ConvertFrom-Json
+          $s = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+          Invoke-WebRequest "http://127.0.0.1:$($j.port)/?t=$($j.token)" -WebSession $s -UseBasicParsing | Out-Null
+          $r = Invoke-WebRequest "http://127.0.0.1:$($j.port)/" -WebSession $s -UseBasicParsing
+          if ($r.Content -notmatch "Контроль договоров") { throw "Экран не открылся" }
+          $r = Invoke-WebRequest "http://127.0.0.1:$($j.port)/api/summary" -WebSession $s -UseBasicParsing
+          if ($r.StatusCode -ne 200) { throw "API не отвечает" }
+          Invoke-WebRequest "http://127.0.0.1:$($j.port)/api/quit" -Method Post -Body "{}" -WebSession $s -UseBasicParsing | Out-Null
 
       - uses: actions/upload-artifact@v4
         with:

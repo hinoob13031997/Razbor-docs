@@ -65,6 +65,7 @@ class Analysis:
     flags: list[str] = field(default_factory=list)
     text_hash: str = ""
     chars: int = 0
+    ids: dict = field(default_factory=dict)
 
 
 def text_fingerprint(text: str) -> str:
@@ -91,6 +92,7 @@ def analyze(rr: ReadResult, custom: list[CustomField] | None = None) -> Analysis
         a.snippets[name] = doc.snippet(hit.pos, hit.end)
     a.flags = F.find_flags(doc, cl.group, cl.key)
     a.text_hash = text_fingerprint(doc.text)
+    a.ids = F.find_identifiers(doc)
     for cf in custom or []:
         if cf.only_types and cl.key not in cf.only_types:
             continue

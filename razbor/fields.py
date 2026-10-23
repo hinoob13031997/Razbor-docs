@@ -109,6 +109,12 @@ IP_ANY = re.compile(r"(?<![\w/])(\d{3,8}/\d{2}/\d{5}-(?:ИП|СД))(?![\w/])")
 
 WRIT = re.compile(r"(?:серия\s+)?\b(ФС|ВС|ЕС|АС|ВС)\s*(?:№|N|No\.?)?\s*(\d{6,9})\b", re.I)
 
+INN_RX = re.compile(r"(?i)\bИНН\b[\s:№N.]*(\d{10}|\d{12})\b")
+DEATH_DATE = re.compile(
+    r"(?i)(?:дата\s+смерти|умер(?:ла)?|смерть\s+наступила)\W{0,25}"
+    r"(\d{1,2}[./]\d{1,2}[./]\d{4}|[«\"“]?\d{1,2}[»\"”]?\s+[а-я]+\s+\d{4})")
+TOKEN_RX = re.compile(r"[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\-/_.]{3,34}")
+
 CONTRACT_NO = re.compile(
     r"(?i:договор\w*(?:\s+(?:потребительского\s+)?(?:кредита|займа|микрозайма|цессии|уступки\s+прав"
     r"(?:\s*\(?требований\)?)?|уступки\s+права\s+требования))?|соглашени\w+)"
@@ -440,6 +446,16 @@ def extract(doc: Doc, doc_key: str, group: str) -> dict[str, Hit]:
                 text += f" ({lab})"
             f["Основание окончания"] = Hit(text, bm.start(), bm.end())
 
+    m = INN_RX.search(t)
+    if m:
+        f["ИНН"] = Hit(m.group(1), m.start(1), m.end(1))
+    if doc_key in ("death_cert", "estate"):
+        dm = DEATH_DATE.search(t)
+        if dm:
+            ds = find_dates(dm.group(1))
+            if ds:
+                f["Дата смерти"] = Hit(ds[0][0], dm.start(1), dm.end(1))
+
     return f
 
 
@@ -454,3 +470,34 @@ def find_flags(doc: Doc, group: str, doc_key: str) -> list[str]:
                 continue
             flags.append(name)
     return flags
+
+
+def find_identifiers(doc: Doc) -> dict[str, list[str]]:
+    """Все номера, по которым документ можно привязать к договору из портфеля."""
+    t = doc.text
+    ids: dict[str, list[str]] = {"contracts": [], "tokens": [], "inns": [], "cases": [], "ips": [], "writs": []}
+
+    def add(key: str, val: str) -> None:
+        val = val.strip(" .,;)")
+        if val and val not in ids[key]:
+            ids[key].append(val)
+
+    for m in CONTRACT_NO.finditer(t):
+        v = m.group(1).strip(" .,;)")
+        if len(v) >= 3 and not CASE_RESERVED.match(v):
+            add("contracts", v)
+    for m in TOKEN_RX.finditer(t):
+        v = m.group(0).strip(" .,;)-/_")
+        if 4 <= len(v) <= 35 and re.search(r"[A-Za-zА-Яа-я]", v) and re.search(r"\d", v):
+            add("tokens", v)
+    for m in INN_RX.finditer(t):
+        add("inns", m.group(1))
+    for rx in (CASE_LABELED, CASE_HASH, CASE_ANY):
+        for m in rx.finditer(t):
+            add("cases", re.sub(r"\s+", " ", m.group(1)))
+    for rx in (IP_LABELED, IP_ANY):
+        for m in rx.finditer(t):
+            add("ips", m.group(1))
+    for m in WRIT.finditer(t):
+        add("writs", f"{m.group(1).upper()} {m.group(2)}")
+    return ids
