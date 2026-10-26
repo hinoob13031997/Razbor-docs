@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from .classify import G_CONTRACT, G_FSSP, HEAD_CHARS
+from .classify import G_CONTRACT, G_COURT, G_FSSP, HEAD_CHARS
 from .textutil import find_dates, fmt_money, to_decimal
 
 
@@ -57,25 +57,41 @@ _SP = r"(?:[ \t]+|[ \t]*\n[ \t]*)"
 _FIO = rf"({_TOK}{_SP}{_TOK}{_SP}{_TOK})"
 _PATRONYMIC = re.compile(
     r"(?:[иы]ч[а-я]{0,3}|[ое]вн[аыеуо]й?|ичн[аыеуо]й?|оглы|кызы|гызы|угли|ичем|ичу|иче)$", re.I)
-_NOT_NAME = re.compile(
-    r"общество|акционерн|публичн|закрыт|открыт|банк|компани|микрофинанс|кредитн|потребительск|"
-    r"управлен|российск|федераци|отдел|суд\b|судья|мирово|участок|район|област|республик|"
-    r"город|ответственност|ограниченн|коллектор|агентств|отделени|службы|служба|страхов",
-    re.I)
+_STOP_WORDS = {
+    "общество", "акционерное", "публичное", "закрытое", "открытое", "банк", "компания", "кредитная",
+    "управление", "российской", "федерации", "федеральной", "отдел", "отделение", "суд", "судья",
+    "мировой", "участок", "район", "районный", "область", "республика", "город", "ответственностью",
+    "ограниченной", "агентство", "служба", "службы", "страховая", "кооператив",
+}
+_STOP_STEMS = ("акционерн", "публичн", "микрофинанс", "потребительск", "ограниченн", "ответственност",
+               "российск", "федерацион", "коллектор", "страхов", "отделени", "мирово", "республик")
+
+
+def _is_stop_token(tok: str) -> bool:
+    t = tok.lower().replace("ё", "е")
+    return t in _STOP_WORDS or t.startswith(_STOP_STEMS)
 
 
 def looks_like_person(fio: str) -> bool:
     parts = re.split(r"\s+", fio.strip())
-    if len(parts) != 3 or _NOT_NAME.search(fio):
+    if len(parts) != 3 or any(_is_stop_token(x) for x in parts):
         return False
     return bool(_PATRONYMIC.search(parts[2]))
 
 
 def _fio_match(rx: re.Pattern, text: str, group: int = 1):
-    for m in rx.finditer(text):
+    """Первое подходящее ФИО. Если три слова подряд оказались не человеком («РАЙОНУ ИВАНОВ ИВАН»),
+    поиск продолжается со следующего слова, чтобы не пропустить настоящее ФИО сразу за ними."""
+    pos = 0
+    while pos <= len(text):
+        m = rx.search(text, pos)
+        if m is None:
+            return None, None
         fio = re.sub(r"\s+", " ", m.group(group)).strip()
         if looks_like_person(fio):
             return m, fio
+        first = re.match(r"\S+", text[m.start(group):])
+        pos = m.start(group) + max(1, len(first.group(0)) if first else 1)
     return None, None
 
 
@@ -86,6 +102,15 @@ _LABEL_PERSON = (
 FIO_LABELED = re.compile(_LABEL_PERSON + r"\s*(?:\([^)\n]{0,40}\))?\s*[:\-–—]?\s*(?:гражданин\w*\s+)?" + _FIO)
 FIO_DATIVE = re.compile(r"(?i:\bк|\bс|взыскать\s+с|с\s+должника)[ \t]+" + _FIO)
 FIO_ANY = re.compile(_FIO)
+FIO_VOTNOSH = re.compile(
+    r"(?i:в\s+отношении)\s+(?i:должника|заем[щц]ика|заёмщика|гражданина|гражданки)\s*(?:\([^)\n]{0,40}\))?\s*[:\-–—]?\s*"
+    r"(?:(?i:гражданин\w*)\s+)?" + _FIO)
+_UP = r"[А-ЯЁ]{2,}(?:-[А-ЯЁ]{2,})?"
+_UP_FIO = rf"({_UP}{_SP}{_UP}{_SP}{_UP})"
+# ФИО прописными, дальше в той же строке или соседней ИНН или дата рождения: «ИВАНОВ ИВАН ИВАНОВИЧ, ИНН 77…»
+FIO_UPPER_ID = re.compile(
+    _UP_FIO + r"[ \t]*[,;(]?[^\n]{0,70}?(?:\bИНН\b|\d{1,2}[./]\d{1,2}[./]\d{4}[ \t]*(?i:г\.?\s*р|года\s+рожд))")
+FIO_UPPER_ANY = re.compile(r"(?<![А-ЯЁа-яё\-])" + _UP_FIO + r"(?![А-ЯЁа-яё\-])")
 
 BIRTH = re.compile(
     r"(?i:дата\s+рождения|д\.?\s*р\.?|родил(?:ся|ась)|г\.?\s*р\.?)[ \t:,\-]*(\d{1,2}[./]\d{1,2}[./]\d{4})")
@@ -115,10 +140,16 @@ DEATH_DATE = re.compile(
     r"(\d{1,2}[./]\d{1,2}[./]\d{4}|[«\"“]?\d{1,2}[»\"”]?\s+[а-я]+\s+\d{4})")
 TOKEN_RX = re.compile(r"[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\-/_.]{3,34}")
 
+_DATE_RX = r"(?:\d{1,2}[./]\d{1,2}[./]\d{2,4}|[«\"“]?\d{1,2}[»\"”]?\s+[а-я]+\s+\d{4})"
+_NO_TOKEN = r"[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9\-/_.]{2,34}"
+# продолжение номера после пробела или переноса строки: «РК-351182/АКк 60/2013/01-01/36644»
+_NO_TAIL = r"(?:[ \t]*\n?[ \t]*(?=[A-Za-zА-Яа-я0-9\-_.]*/)[A-Za-zА-Яа-я0-9\-/_.]{3,30})?"
 CONTRACT_NO = re.compile(
     r"(?i:договор\w*(?:\s+(?:потребительского\s+)?(?:кредита|займа|микрозайма|цессии|уступки\s+прав"
     r"(?:\s*\(?требований\)?)?|уступки\s+права\s+требования))?|соглашени\w+)"
-    r"\s*(?:№|N|No\.?)\s*([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9\-/_.]{2,34})")
+    r"(?:\s+(?i:от)\s+" + _DATE_RX + r"\s*(?i:г(?:ода|\.)?)?)?"
+    r"\s*(?:№|N|No\.?)\s*(" + _NO_TOKEN + _NO_TAIL + r")")
+CESSION_WORD = re.compile(r"(?i)уступк|цесси")
 
 CASE_RESERVED = re.compile(r"^\d{1,2}[а-я]?-\d{1,6}/\d{2,4}", re.I)
 
@@ -157,12 +188,16 @@ MONEY_LABELED = re.compile(
     r"размер\w*\s+задолженности|остаток\s+(?:основного\s+)?долга|предмет\s+исполнения[^:\n]{0,80})"
     r"\s*[:\-–—]?\s*(?:составляет\s*)?(?<![\d.,/])" + _NUM + r"(?![\d]|[ \t]*%|/)")
 
+_IPFEE = re.compile(r"исполнительск\w+\s+сбор\w*|неосновн\w+\s+долг\w*", re.I)
+_IPFEE_AFTER = re.compile(r"^\s*\(\s*(?:[^)]{0,30}\s)?исполнительск\w+\s+сбор", re.I)
+
 _CATS = [
+    ("ipfee", re.compile(r"\u2063ИПСБОР\u2063")),
     ("fee", re.compile(r"пошлин", re.I)),
     ("penalty", re.compile(r"неустой|штраф|пени\b|пеня", re.I)),
     ("interest", re.compile(r"процент(?!н)", re.I)),
     ("credit", re.compile(r"кредит|заем\b|займ|лимит", re.I)),
-    ("main", re.compile(r"задолжен|долг|основн|остат|предмет\s+исполнения|взыскать|взыскани|"
+    ("main", re.compile(r"задолжен|долг|(?<!не)основн|остат|предмет\s+исполнения|взыскать|взыскани|"
                         r"сумм[аы]\s+иска|цена\s+иска|размер\w*\s+задолженности", re.I)),
 ]
 
@@ -182,7 +217,7 @@ def find_amounts(text: str) -> list[Amount]:
         v = to_decimal(m.group(1), m.group(2), m.group(3))
         if v is None or v <= 0:
             continue
-        out.append(Amount(v, m.start(), m.end(), _category(text, m.start())))
+        out.append(Amount(v, m.start(), m.end(), _category(text, m.start(), m.end())))
         spans.append((m.start(), m.end()))
     for m in MONEY_LABELED.finditer(text):
         if any(a <= m.start() < b or a < m.end() <= b for a, b in spans):
@@ -192,14 +227,18 @@ def find_amounts(text: str) -> list[Amount]:
             continue
         label = m.group(0).lower()
         cat = "credit" if re.search(r"кредита|займа", label) else "main"
+        if _IPFEE.search(label):
+            cat = "ipfee"
         out.append(Amount(v, m.start(), m.end(), cat))
     out.sort(key=lambda a: a.pos)
     return out
 
 
-def _category(text: str, pos: int) -> str:
+def _category(text: str, pos: int, end: int | None = None) -> str:
     ctx = text[max(0, pos - 140):pos]
-    ctx = ctx.replace("\n", " ")
+    ctx = _IPFEE.sub("\u2063ИПСБОР\u2063", ctx.replace("\n", " "))
+    if end is not None and _IPFEE_AFTER.match(text[end:end + 60].replace("\n", " ")):
+        return "ipfee"
     best, best_at = "other", -1
     for cat, rx in _CATS:
         last = None
@@ -224,6 +263,75 @@ FLAG_RULES = [
     ("невозможно взыскать", re.compile(r"невозможн\w+\s+(?:установить|взыскани)|невозможностью\s+взыскания|отсутствует\s+имущество|отсутствуют\s+(?:сведения|доходы)", re.I)),
     ("срок давности", re.compile(r"срок\w*\s+исковой\s+давности|пропущен\w*\s+срок", re.I)),
 ]
+
+# типовая цитата ст. 44 ГПК: «(смерть гражданина, реорганизация юридического лица, уступка требования…)»
+STATUTE_QUOTE = re.compile(r"\(\s*смерть\s+гражданина\s*,\s*реорганизаци[^)]{0,250}\)", re.I)
+VIN_RX = re.compile(r"\bVIN\b[\s:№N.]*([A-HJ-NPR-Z0-9]{17})\b")
+SUCCESSION_HINT = re.compile(r"(?i)процессуальн\w+\s+правопреемств|замен\w+\s+(?:стороны|взыскателя|истца)")
+
+_FIO_NC = "(?:" + _FIO[1:]  # то же ФИО, но без группы захвата
+_PARTY = rf"(?:{_ORG_FORM}\s*[«\"“„][^»\"”]{{2,90}}[»\"”]|{_FIO_NC})"
+_PARTY_INIT = r"[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?[ \t]+[А-ЯЁ]\.[ \t]?[А-ЯЁ]\."
+_ROLE = r"(истц\w+|взыскател\w+|заявител\w+|ответчик\w*|должник\w*|сторон\w+)"
+REPLACE_FULL = re.compile(
+    r"(?i:замени\w+|заменить)[ \t\n]+" + _ROLE + r"[ \t\n]+(?:\([^)\n]{0,40}\)[ \t\n]+)?(" + _PARTY + r")"
+    r"[ \t\n]+(?:\([^)\n]{0,40}\)[ \t\n]+)?(?i:на)[ \t\n]+(" + _PARTY + r")")
+REPLACE_INIT = re.compile(
+    r"(?i:замени\w+|заменить)[ \t\n]+" + _ROLE + r"[ \t\n]+(" + _PARTY + r"|" + _PARTY_INIT + r")"
+    r"[ \t\n]+(?i:на)[ \t\n]+(" + _PARTY + r"|" + _PARTY_INIT + r")")
+APPLICANT = re.compile(r"(?i:заявлени\w+)[ \t\n]+(" + _PARTY + r")[ \t\n]+(?i:о[ \t\n]+(?:процессуальн\w+[ \t\n]+)?правопреемств|о[ \t\n]+замене)")
+CESSION_DATE = [
+    re.compile(r"(?i:договор\w*|соглашени\w+)\s+(?i:от)\s+(" + _DATE_RX + r")\s*(?i:г(?:ода|\.)?)?\s+(?i:об?\s+)?(?i:уступк\w+|цесси\w+)"),
+    re.compile(r"(?i:уступк\w+|цесси\w+)[^.\n]{0,60}?(?i:от)\s+(" + _DATE_RX + r")"),
+]
+_ROLE_NAME = (("истц", "истец"), ("взыск", "взыскатель"), ("заяви", "заявитель"), ("ответ", "ответчик"),
+              ("должн", "должник"), ("сторо", "сторона"))
+
+
+def _role_name(word: str) -> str:
+    w = word.lower()
+    for stem, name in _ROLE_NAME:
+        if w.startswith(stem):
+            return name
+    return w
+
+
+def _succession_fields(doc: "Doc", f: dict) -> None:
+    """Определение о замене стороны: кого заменили, на кого, дата уступки.
+
+    Новый взыскатель (или истец) становится «Взыскателем / кредитором»: именно он теперь держит долг.
+    """
+    t = doc.text
+    best = None
+    for rx, note in ((REPLACE_FULL, ""), (REPLACE_INIT, "по инициалам, проверить")):
+        for m in rx.finditer(t):
+            best = (m, note)
+            break
+        if best:
+            break
+    if best:
+        m, note = best
+        role = _role_name(m.group(1))
+        old = re.sub(r"\s+", " ", m.group(2)).strip()
+        new = re.sub(r"\s+", " ", m.group(3)).strip()
+        f["Кого заменили"] = Hit(old, m.start(2), m.end(2), role)
+        f["На кого заменили"] = Hit(new, m.start(3), m.end(3), (role + (", " + note if note else "")))
+        if role in ("истец", "взыскатель", "заявитель"):
+            f["Взыскатель / кредитор"] = Hit(new, m.start(3), m.end(3), "правопреемник" + (", " + note if note else ""))
+    else:
+        am = APPLICANT.search(t)
+        if am:
+            new = re.sub(r"\s+", " ", am.group(1)).strip()
+            f["На кого заменили"] = Hit(new, am.start(1), am.end(1), "по заявлению, проверить")
+            f["Взыскатель / кредитор"] = Hit(new, am.start(1), am.end(1), "по заявлению о правопреемстве, проверить")
+    for rx in CESSION_DATE:
+        cm = rx.search(t)
+        if cm:
+            ds = find_dates(cm.group(1))
+            if ds:
+                f["Дата уступки"] = Hit(ds[0][0], cm.start(1), cm.end(1))
+                break
+
 
 BASIS_46_47 = [
     re.compile(r"(?i:п(?:ункт\w*|п?\.)?)\s*(\d)\s*(?i:ч(?:асти|аст\w*|\.))\s*(\d)\s*(?i:ст(?:атьи|\.)?)\s*(46|47)\b"),
@@ -331,15 +439,18 @@ def extract(doc: Doc, doc_key: str, group: str) -> dict[str, Hit]:
         f["Номер ИП"] = Hit(m.group(1), m.start(1), m.end(1))
     m = WRIT.search(t)
     if m and doc_key in ("writ", "fssp_start", "fssp_end", "fssp_refuse", "fssp_other",
-                         "fssp_levy", "fssp_stop", "fssp_act", "ruling", "order_cancel"):
+                         "fssp_levy", "fssp_stop", "fssp_act", "ruling", "order_cancel", "succession"):
         f["Исп. лист (серия, №)"] = Hit(f"{m.group(1).upper()} {m.group(2)}", m.start(), m.end())
 
     # договор
     if group in (G_CONTRACT,) or doc_key in ("claim", "calc", "claim_letter", "decision", "order",
-                                              "order_application", "ruling"):
+                                              "order_application", "ruling", "succession"):
         for m in CONTRACT_NO.finditer(t):
-            val = m.group(1).strip(" .,;)")
+            val = re.sub(r"\s+", " ", m.group(1)).strip(" .,;)")
             if CASE_RESERVED.match(val) or len(val) < 3:
+                continue
+            if CESSION_WORD.search(m.group(0)) and doc_key not in ("cession", "cession_notice"):
+                f.setdefault("Номер договора уступки", Hit(val, m.start(1), m.end(1)))
                 continue
             f["Номер договора"] = Hit(val, m.start(1), m.end(1))
             break
@@ -350,6 +461,15 @@ def extract(doc: Doc, doc_key: str, group: str) -> dict[str, Hit]:
     if m is None:
         m, fio = _fio_match(FIO_DATIVE, t)
         note = "по предлогу"
+    if m is None:
+        m, fio = _fio_match(FIO_VOTNOSH, t)
+        note = "по метке «в отношении должника»"
+    if m is None:
+        m, fio = _fio_match(FIO_UPPER_ID, t)
+        note = "прописными рядом с ИНН / датой рождения"
+    if m is None and group == G_FSSP:
+        m, fio = _fio_match(FIO_UPPER_ANY, t)
+        note = "прописными без метки, проверить"
     if m is None and doc_key in ("death_cert", "estate"):
         m, fio = _fio_match(FIO_ANY, t)
         note = "первое ФИО"
@@ -385,6 +505,8 @@ def extract(doc: Doc, doc_key: str, group: str) -> dict[str, Hit]:
             if om:
                 f["Взыскатель / кредитор"] = Hit(re.sub(r"\s+", " ", om.group(0)), om.start(), om.end(),
                                                  "первая организация в начале")
+    if doc_key == "succession" or (group == G_COURT and SUCCESSION_HINT.search(doc.head)):
+        _succession_fields(doc, f)
     if doc_key in ("cession", "cession_notice"):
         cd = CEDENT_LABEL.search(t)
         if cd:
@@ -405,6 +527,13 @@ def extract(doc: Doc, doc_key: str, group: str) -> dict[str, Hit]:
     if fees:
         a = fees[0]
         f["Госпошлина"] = Hit(a.value, a.pos, a.end)
+    ipfees = [a for a in amounts if a.cat == "ipfee"]
+    if ipfees:
+        a = ipfees[0]
+        f["Исполнительский сбор"] = Hit(a.value, a.pos, a.end, "в основную сумму не входит")
+    vm = VIN_RX.search(t)
+    if vm:
+        f["VIN (залог)"] = Hit(vm.group(1), vm.start(1), vm.end(1))
     if credit and group == G_CONTRACT:
         a = credit[0]
         f["Сумма кредита / займа"] = Hit(a.value, a.pos, a.end, "по метке")
@@ -464,8 +593,9 @@ def find_flags(doc: Doc, group: str, doc_key: str) -> list[str]:
     if group == G_CONTRACT:
         return []  # в договорах эти слова есть в типовых условиях
     flags: list[str] = []
+    text = STATUTE_QUOTE.sub(" ", doc.text)
     for name, rx in FLAG_RULES:
-        if rx.search(doc.text):
+        if rx.search(text):
             if name == "отмена судебного приказа" and doc_key == "order_cancel":
                 continue
             flags.append(name)
@@ -478,7 +608,7 @@ def find_identifiers(doc: Doc) -> dict[str, list[str]]:
     ids: dict[str, list[str]] = {"contracts": [], "tokens": [], "inns": [], "cases": [], "ips": [], "writs": []}
 
     def add(key: str, val: str) -> None:
-        val = val.strip(" .,;)")
+        val = re.sub(r"\s+", " ", val).strip(" .,;)")
         if val and val not in ids[key]:
             ids[key].append(val)
 

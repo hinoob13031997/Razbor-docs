@@ -168,6 +168,15 @@ def facts_from(a: Analysis) -> dict[str, str]:
         out["ip_end_date"] = dt("Дата документа")  # type: ignore[assignment]
         if "Основание окончания" in f:
             out["ip_end_basis"] = str(f["Основание окончания"].value)
+    elif dk == "succession":
+        if dt("Дата документа"):
+            out["succession_date"] = dt("Дата документа")  # type: ignore[assignment]
+        if dt("Дата уступки"):
+            out["cession_date"] = dt("Дата уступки")  # type: ignore[assignment]
+        if "На кого заменили" in f:
+            out["new_creditor"] = str(f["На кого заменили"].value)
+        if "Кого заменили" in f:
+            out["old_creditor"] = str(f["Кого заменили"].value)
     elif dk in ("death_cert", "estate"):
         if dt("Дата смерти"):
             out["death_date"] = dt("Дата смерти")  # type: ignore[assignment]

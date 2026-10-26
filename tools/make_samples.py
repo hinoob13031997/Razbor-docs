@@ -183,6 +183,24 @@ doc("16_noisy_scan.pdf", "scan", ["""РАСЧЁТ ЗАДОЛЖЕННОСТИ
     {"type": "calc", "Номер договора": "КД-554433"}, noise=True)
 
 
+def _text_of(name: str) -> str:
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, "tests", "texts", name), encoding="utf-8") as fh:
+        return fh.read().strip()
+
+
+doc("17_opredelenie_pravopreemstvo.pdf", "text", [_text_of("succession_ruling.txt")],
+    {"type": "succession", "Номер дела": "2-4321/2023", "Дата документа": "2023-06-14",
+     "ФИО": "Петрову Ивану Сергеевичу", "Кого заменили": "ООО «АБВ»", "На кого заменили": "Кузнецову Елену Петровну",
+     "Взыскатель / кредитор": "Кузнецову Елену Петровну", "Дата уступки": "2023-06-02",
+     "Номер договора": "РК-123456/АКк 60/2013/01-01/12345", "Сумма основная": "187450.36", "Госпошлина": "5249.00",
+     "flags": ["правопреемство / цессия"]})
+
+doc("18_fssp_okonchanie_sbor.pdf", "text", [_text_of("fssp_end_with_fee.txt")],
+    {"type": "fssp_end", "Номер ИП": "123456/23/78054-ИП", "Дата документа": "2024-03-05",
+     "ФИО": "ГОРОДЕЦКАЯ МАРИЯ СЕРГЕЕВНА", "Сумма основная": "220784.12", "Исполнительский сбор": "15454.89"})
+
+
 def wrap_lines(text: str, width: int) -> list[str]:
     out: list[str] = []
     for line in text.split("\n"):

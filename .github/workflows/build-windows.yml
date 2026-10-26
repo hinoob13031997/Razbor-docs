@@ -31,6 +31,9 @@ jobs:
             Invoke-WebRequest "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$l.traineddata" -OutFile "tessdata_dl/$l.traineddata"
           }
 
+      - name: Проверка чтения полей (готовый текст, без распознавания)
+        run: python tests/test_fields.py
+
       - name: Проверка на тестовых документах (до сборки)
         env:
           RAZBOR_TESSERACT: C:\Program Files\Tesseract-OCR\tesseract.exe
