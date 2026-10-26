@@ -36,11 +36,13 @@ PARAM_TITLES = {
 
 SIT_LABELS = {
     "death": "Должник умер", "bankr": "Банкротство", "liq": "Организация ликвидирована",
-    "ip_end": "ИП окончено, лист возвращён", "ip": "Идёт исполнительное производство",
+    "ip_end": "ИП окончено", "ip": "Идёт исполнительное производство",
     "court": "Есть решение суда", "expired": "Срок давности истёк", "pre": "Досудебная работа",
+    "closed": "Исполнено / погашено", "stop": "Работа остановлена", "ip_filed": "Подано заявление об ИП",
 }
 SIT_CLS = {"death": "red", "bankr": "red", "liq": "red", "ip_end": "amb", "ip": "blue", "court": "blue",
-           "expired": "red", "pre": "gray"}
+           "expired": "red", "pre": "gray",
+           "closed": "teal", "stop": "gray", "ip_filed": "blue"}
 
 
 def load_params(store: Store) -> dict[str, int]:
@@ -106,37 +108,64 @@ def derive(c: dict, facts: dict[str, str], p: dict[str, int], today: date) -> di
 
     Берёт данные из CRM (c) и из прочитанных документов (facts); данные документов важнее.
     """
+    status = (c.get("status") or "").lower()
+    ov = (c.get("status_ov") or "").lower()
+    ipst = (c.get("ip_status") or "").lower().strip()
+    reason = (c.get("ip_end_reason") or facts.get("ip_end_basis") or "").lower()
     death = d(facts.get("death_date")) or d(c.get("death_date"))
+    is_dead = bool(death) or "умер" in status or "умер" in ov
     bankr_date = d(facts.get("bankr_date")) or d(c.get("bankrupt_date"))
-    is_bankr = bool(c.get("bankrupt")) or bankr_date is not None
+    is_bankr = bool(c.get("bankrupt")) or bankr_date is not None or "банкрот" in status or "банкрот" in ov \
+        or "банкрот" in reason
+    kind = c.get("kind") or "Физлицо"
+    is_liq = "ликвид" in status
+    closed = "исполнено" in status or "исполнено" in ov or "погашен" in ipst or "(исполнено)" in reason
+    stopped = "стоп" in status
     decision = d(facts.get("decision_date")) or d(c.get("decision_date"))
     effective = d(facts.get("effective_date"))
     cancel = d(facts.get("order_cancel_date"))
     if decision and cancel and facts.get("decision_kind") == "order" and cancel >= decision:
         decision, effective = None, None  # судебный приказ отменён
-    ip_start = d(facts.get("ip_start_date")) or d(c.get("fssp_date"))
-    ip_end = d(facts.get("ip_end_date"))
+    sa_cancel = "отмена са" in reason or "недействительным ид" in reason
+    # ИП по данным CRM: чужие («не на нас»), аннулированные и отказанные не учитываем
+    foreign = "не на нас" in ipst
+    crm_ok = not foreign and ipst not in ("аннулировано", "отказ")
+    crm_start = d(c.get("ip_rise")) if crm_ok else None
+    crm_end = d(c.get("ip_end_crm")) if crm_ok else None
+    renew = d(c.get("ip_renewal")) if crm_ok else None
+    if crm_end and renew and renew > crm_end:
+        crm_end = None  # производство возобновлено
+    ip_start = d(facts.get("ip_start_date")) or crm_start or d(c.get("fssp_date"))
+    ip_end = d(facts.get("ip_end_date")) or crm_end
     if ip_end and ip_start and ip_end < ip_start:
         ip_end = None
+    ended_nodate = crm_ok and not ip_end and ipst in ("окончено", "архив")
+    filed = crm_ok and ipst == "подано" and not ip_start
+    # повторное предъявление: лист возвращается при окончании по ст. 46; по ст. 47 — нет
+    reoffer_ok = "ст. 47" not in reason
     last_pay = d(c.get("last_pay_date"))
-    kind = c.get("kind") or "Физлицо"
-    status = (c.get("status") or "").lower()
     dls: list[dict] = []
 
     def add(kind_: str, name: str, rule: str, when: date, src: str) -> None:
         dls.append({"kind": kind_, "name": name, "rule": rule, "date": when.isoformat(), "src": src})
 
     # --- ситуация
-    if death:
+    if is_dead:
         sit = "death"
     elif is_bankr:
         sit = "bankr"
-    elif kind == "Юрлицо" and "ликвид" in status:
+    elif is_liq:
         sit = "liq"
-    elif ip_end:
+    elif closed:
+        sit = "closed"
+    elif stopped:
+        sit = "stop"
+    elif ip_end or ended_nodate:
         sit = "ip_end"
     elif ip_start:
         sit = "ip"
+    elif filed:
+        sit = "ip_filed"
     elif decision:
         sit = "court"
     else:
@@ -150,19 +179,19 @@ def derive(c: dict, facts: dict[str, str], p: dict[str, int], today: date) -> di
         add("limit", "Срок исковой давности",
             f"{years_txt(p['limit_years'])} с даты просрочки {fmt(base)}; нужно проверить перерывы",
             when, f"CRM: дата последнего платежа {fmt(last_pay)}")
-        if when < today and sit == "pre":
+        if when < today:
             sit = "expired"
-    if ip_end:
+    if sit == "ip_end" and ip_end and reoffer_ok:
         when = add_years(ip_end, p["reoffer_years"])
         add("reoffer", "Повторно предъявить исполнительный лист",
             f"{years_txt(p['reoffer_years'])} со дня возвращения листа (ИП окончено {fmt(ip_end)})",
-            when, f"постановление об окончании ИП от {fmt(ip_end)}")
-    elif decision and not ip_start and effective:
+            when, f"окончание ИП {fmt(ip_end)}" + (f", {c.get('ip_end_reason')}" if c.get("ip_end_reason") else ""))
+    elif sit == "court" and effective:
         when = add_years(effective, p["reoffer_years"])
         add("present", "Предъявить исполнительный лист к исполнению",
             f"{years_txt(p['reoffer_years'])} со дня вступления решения в силу ({fmt(effective)}); условный расчёт",
             when, f"решение суда от {fmt(decision)}")
-    if is_bankr and bankr_date:
+    if sit == "bankr" and bankr_date:
         if kind == "Юрлицо":
             add("rtk", "Заявить требование в процедуре банкротства",
                 f"{p['rtk_org_days']} дн. с даты судебного акта {fmt(bankr_date)}; условный расчёт, уточнить дату публикации",
@@ -171,26 +200,35 @@ def derive(c: dict, facts: dict[str, str], p: dict[str, int], today: date) -> di
             add("rtk", "Включить требование в реестр кредиторов",
                 f"{months_txt(p['rtk_person_months'])} с даты судебного акта {fmt(bankr_date)}; условный расчёт, уточнить дату публикации",
                 add_months(bankr_date, p["rtk_person_months"]), f"судебный акт о банкротстве от {fmt(bankr_date)}")
-    if death:
+    if sit == "death" and death:
         add("estate", "Предъявить требования по наследственному делу",
             f"Условный расчёт: {years_txt(p['estate_years'])} с даты смерти {fmt(death)}; правило уточнит юрист",
             add_years(death, p["estate_years"]), f"дата смерти {fmt(death)}")
     ip_info = {"state": "none", "start": None, "end": None, "months": None, "stalled": 0}
-    if ip_start and not ip_end:
-        base = d(c.get("fssp_actual")) or ip_start
-        add("check", "Плановая проверка хода ИП", f"раз в {months_txt(p['check_months'])}",
-            add_months(base, p["check_months"]),
-            f"данные ФССП на {fmt(base)}" if d(c.get("fssp_actual")) else f"ИП возбуждено {fmt(ip_start)}")
-        income = last_pay if last_pay and last_pay >= ip_start else None
-        ref = income or ip_start
-        stalled = 1 if months_between(ref, today) >= p["stalled_months"] else 0
+    if ip_start and not ip_end and not ended_nodate:
+        stalled = 0
+        if sit == "ip":
+            base = d(c.get("fssp_actual")) or ip_start
+            nxt = add_months(base, p["check_months"])
+            k = 1
+            while nxt < today and p["check_months"] > 0 and k < 600:  # ближайшая плановая дата, не прошедшая
+                k += 1
+                nxt = add_months(base, p["check_months"] * k)
+            add("check", "Плановая проверка хода ИП", f"раз в {months_txt(p['check_months'])}",
+                nxt,
+                f"данные ФССП на {fmt(base)}" if d(c.get("fssp_actual")) else f"ИП возбуждено {fmt(ip_start)}")
+            income = last_pay if last_pay and last_pay >= ip_start else None
+            stalled = 1 if months_between(income or ip_start, today) >= p["stalled_months"] else 0
         ip_info = {"state": "active", "start": ip_start.isoformat(), "end": None,
                    "months": months_between(ip_start, today), "stalled": stalled}
     elif ip_start and ip_end:
         ip_info = {"state": "ended", "start": ip_start.isoformat(), "end": ip_end.isoformat(),
                    "months": months_between(ip_start, ip_end), "stalled": 0}
     dls.sort(key=lambda x: x["date"])
-    return {"sit": sit, "deadlines": dls, "ip": ip_info}
+    flags = {"sa_cancel": sa_cancel, "ended_nodate": ended_nodate, "no_reoffer": bool(ip_end) and not reoffer_ok,
+             "foreign_ip": foreign, "ip_status": c.get("ip_status") or "", "reason": c.get("ip_end_reason") or "",
+             "status": c.get("status") or ""}
+    return {"sit": sit, "deadlines": dls, "ip": ip_info, "flags": flags}
 
 
 def recalc_contracts(store: Store, ids: list[int] | None = None, today: date | None = None,
@@ -203,7 +241,8 @@ def recalc_contracts(store: Store, ids: list[int] | None = None, today: date | N
     from .actions import next_actions
 
     cols = ("id, kind, status, bankrupt, bankrupt_date, death_date, decision_date, fssp_date, fssp_actual, "
-            "last_pay_date, estate_no, il_no, last_doc_at")
+            "last_pay_date, estate_no, il_no, last_doc_at, status_ov, ip_status, ip_rise, ip_renewal, ip_end_crm, "
+            "ip_end_reason")
     if ids is None:
         cur = conn.execute(f"SELECT {cols} FROM contracts")
     else:
@@ -223,7 +262,7 @@ def recalc_contracts(store: Store, ids: list[int] | None = None, today: date | N
             ip = res["ip"]
             c2 = dict(c, sit=res["sit"], ip_stalled=ip["stalled"], ip_start=ip["start"])
             acts = next_actions(c2, facts_all.get(c["id"], {}), res["deadlines"],
-                                fresh_level(c.get("last_doc_at"), today, p)["level"], p, today)
+                                fresh_level(c.get("last_doc_at"), today, p)["level"], p, today, flags=res["flags"])
             top = acts[0] if acts else None
             upd.append((res["sit"], first["date"] if first else None, first["name"] if first else None,
                         ip["state"], ip["start"], ip["end"], ip["stalled"], ip["months"],

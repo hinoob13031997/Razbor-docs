@@ -24,9 +24,12 @@ ALIASES: dict[str, list[str]] = {
     "fio": ["fio", "фио", "фио должника", "должник", "наименование должника", "заемщик", "фио заемщика"],
     "birth": ["birthdate", "дата рождения"],
     "inn": ["inn", "инн", "инн должника"],
-    "responsible": ["id_user", "ответственный сотрудник", "ответственный"],
-    "status": ["id_status", "рабочий статус", "статус"],
-    "debt": ["dolg_sum", "сумма долга", "сумма долга исх"],
+    "crm_id": ["id", "id договора", "id_dog"],
+    "ext_id": ["id_out", "внешний id"],
+    "responsible": ["operator_name", "id_user", "ответственный сотрудник", "ответственный", "оператор"],
+    "status": ["status_name", "рабочий статус", "статус", "id_status"],
+    "status_ov": ["status_ov_name", "статус ов"],
+    "debt": ["dolg_sum", "ocs_sum", "сумма долга", "сумма долга исх", "остаток долга"],
     "principal_left": ["dolg_osn_ocs", "основной долг остаток"],
     "principal_court": ["основной долг в суд"],
     "principal_granted": ["основной долг удовлетворено"],
@@ -37,7 +40,7 @@ ALIASES: dict[str, list[str]] = {
     "last_pay_date": ["date_last_payment", "дата последнего платежа"],
     "last_pay_sum": ["sum_last_payment", "сумма последнего платежа"],
     "overdue_end": ["date_stop_proch", "дата окончания просрочки по цессии", "дата окончания просрочки"],
-    "creditor": ["взыскатель"],
+    "creditor": ["recoverer_name", "взыскатель"],
     "court": ["sud_send", "текущий суд", "суд"],
     "suit_date": ["date_isk", "дата искового заявления"],
     "case_no": ["number_delo_il", "№ судебного дела", "номер судебного дела", "номер дела"],
@@ -56,12 +59,24 @@ ALIASES: dict[str, list[str]] = {
     "death_date": ["inh_death_date", "дата смерти"],
     "estate_no": ["inh_delo_nomer", "номер наследственного дела"],
     "notary": ["inh_fio_notarius", "фио нотариуса"],
-    "cession_no": ["number_act", "номер акта приема-передачи"],
+    "cession_no": ["number_act", "dr_secciyaksk", "номер акта приема-передачи", "цессия"],
     "cession_date": ["date_act", "дата акта приема-передачи"],
     "address": ["address_reg", "адрес регистрации"],
+    "inn_status": ["inn_status", "статус инн"],
+    "ip_status": ["dr_status_ip", "статус ип"],
+    "ip_no": ["number_ip", "номер ип", "№ ип"],
+    "ip_rise": ["date_rise_ip", "дата возбуждения ип"],
+    "ip_renewal": ["date_renewal_ip", "дата возобновления ип"],
+    "ip_end_crm": ["date_end_ip", "дата окончания ип"],
+    "ip_susp": ["date_suspension_ip", "дата приостановления ип"],
+    "ip_end_reason": ["end_ip_reason", "причина окончания ип", "основание окончания ип"],
 }
+# Колонки, которые программе не нужны и намеренно не загружаются (контакты и служебные коды)
+IGNORED = {"phone", "email", "телефон", "id_operator", "id_end_ip_reason", "dr_spav_2_status_ov", "name_delo",
+           "mobile", "почта", "электронная почта"}
 DATE_FIELDS = {"contract_date", "birth", "last_pay_date", "overdue_end", "suit_date", "decision_date", "il_date",
-               "fssp_date", "fssp_actual", "bankrupt_date", "death_date", "cession_date"}
+               "fssp_date", "fssp_actual", "bankrupt_date", "death_date", "cession_date", "ip_rise", "ip_renewal",
+               "ip_end_crm", "ip_susp"}
 MONEY_FIELDS = {"debt", "principal_left", "principal_court", "principal_granted", "principal_cession",
                 "principal_initial", "penalties", "fee", "last_pay_sum", "fssp_paid"}
 RECOMMENDED = ["number", "fio", "birth", "inn", "debt", "last_pay_date", "status"]
@@ -80,7 +95,10 @@ FIELD_TITLES = {
     "fssp_actual": "Дата актуальности данных ФССП", "bankrupt": "Банкрот", "bankrupt_date": "Дата признания банкротом",
     "bankrupt_case": "Дело о банкротстве", "death_date": "Дата смерти", "estate_no": "Наследственное дело",
     "notary": "Нотариус", "cession_no": "Акт приёма-передачи №", "cession_date": "Акт приёма-передачи, дата",
-    "address": "Адрес регистрации",
+    "address": "Адрес регистрации", "crm_id": "ID в CRM", "ext_id": "Внешний ID", "status_ov": "Статус ОВ",
+    "inn_status": "Статус ИНН", "ip_status": "Статус ИП", "ip_no": "Номер ИП", "ip_rise": "Дата возбуждения ИП",
+    "ip_renewal": "Дата возобновления ИП", "ip_end_crm": "Дата окончания ИП", "ip_susp": "Дата приостановления ИП",
+    "ip_end_reason": "Причина окончания ИП",
 }
 
 # ---------------------------------------------------------------- нормализация
@@ -94,10 +112,14 @@ def norm_header(h) -> str:
     return re.sub(r"[^0-9a-zа-я_№]+", "", s)
 
 
+_IGNORED_N = {norm_header(x) for x in IGNORED}
 _ALIAS_INDEX: dict[str, str] = {}
+_ALIAS_PRIO: dict[str, int] = {}
 for _f, _al in ALIASES.items():
-    for _a in _al:
-        _ALIAS_INDEX.setdefault(norm_header(_a), _f)
+    for _i, _a in enumerate(_al):
+        if norm_header(_a) not in _ALIAS_INDEX:
+            _ALIAS_INDEX[norm_header(_a)] = _f
+            _ALIAS_PRIO[norm_header(_a)] = _i
 
 
 def norm_number(s) -> str:
@@ -206,6 +228,9 @@ def parse_flag(v) -> int | None:
 
 # ---------------------------------------------------------------- чтение файлов
 
+csv.field_size_limit(10_000_000)
+
+
 def _iter_csv(path: str) -> Iterator[list]:
     raw = open(path, "rb").read(65536)
     enc = "utf-8-sig"
@@ -270,19 +295,28 @@ def open_rows(path: str) -> Iterator[list]:
 
 
 def map_headers(headers: list) -> tuple[dict[int, str], list[str]]:
-    mapping: dict[int, str] = {}
-    used: set[str] = set()
+    """Колонка -> поле. Если на одно поле подходят несколько колонок, берётся та, что выше в списке вариантов
+    (например, «status_name» важнее числового «id_status»)."""
+    best: dict[str, tuple[int, int]] = {}  # поле -> (приоритет, номер колонки)
     unknown: list[str] = []
     for i, h in enumerate(headers):
         if h is None or str(h).strip() == "":
             continue
-        f = _ALIAS_INDEX.get(norm_header(h))
-        if f and f not in used:
-            mapping[i] = f
-            used.add(f)
+        n = norm_header(h)
+        if n in _IGNORED_N:
+            continue
+        f = _ALIAS_INDEX.get(n)
+        if not f:
+            unknown.append(str(h).strip())
+            continue
+        pr = _ALIAS_PRIO[n]
+        if f not in best or pr < best[f][0]:
+            if f in best:
+                unknown.append(str(headers[best[f][1]]).strip())
+            best[f] = (pr, i)
         else:
             unknown.append(str(h).strip())
-    return mapping, unknown
+    return {i: f for f, (_, i) in best.items()}, unknown
 
 
 def build_contract(values: list, mapping: dict[int, str]) -> dict | None:
@@ -291,6 +325,8 @@ def build_contract(values: list, mapping: dict[int, str]) -> dict | None:
         if i >= len(values):
             continue
         v = values[i]
+        if isinstance(v, str) and v.strip().upper() in ("NULL", "NONE", "#N/A", "Н/Д"):
+            v = None
         if f in DATE_FIELDS:
             rec[f] = parse_date(v)
         elif f in MONEY_FIELDS:
@@ -314,6 +350,8 @@ def build_contract(values: list, mapping: dict[int, str]) -> dict | None:
         rec["case_norm"] = norm_number(rec["case_no"]) if rec.get("case_no") else None
     if "il_no" in rec:
         rec["il_norm"] = norm_number(rec["il_no"]) if rec.get("il_no") else None
+    if "ip_no" in rec:
+        rec["ip_norm"] = norm_number(rec["ip_no"]) if rec.get("ip_no") else None
     return rec
 
 
@@ -351,14 +389,16 @@ def import_crm(store: Store, path: str, progress: Callable[[int, str], None] | N
         unknown_all += [u for u in unknown if u not in unknown_all]
         batch_rows: list[dict] = []
         batch_norm: list[str] = []
+        batch_keys: list[str] = []
+        use_id = "crm_id" in mapping.values()  # в CRM есть свой ID записи: он и есть ключ (номера договоров повторяются)
 
         def flush() -> None:
-            nonlocal added, updated, batch_rows, batch_norm
+            nonlocal added, updated, batch_rows, batch_norm, batch_keys
             if batch_rows:
-                a, u = store.upsert_contracts(batch_rows, batch_norm)
+                a, u = store.upsert_contracts(batch_rows, batch_keys, batch_norm)
                 added += a
                 updated += u
-                batch_rows, batch_norm = [], []
+                batch_rows, batch_norm, batch_keys = [], [], []
 
         def feed(values: list) -> None:
             nonlocal rows_total, skipped
@@ -370,9 +410,11 @@ def import_crm(store: Store, path: str, progress: Callable[[int, str], None] | N
                 skipped += 1
                 return
             nn = norm_number(rec["number"])
-            seen.add(hash(nn))
+            key = f"id:{rec['crm_id']}" if use_id and rec.get("crm_id") else f"n:{nn}"
+            seen.add(hash(key))
             batch_rows.append(rec)
             batch_norm.append(nn)
+            batch_keys.append(key)
             if len(batch_rows) >= chunk:
                 flush()
                 if progress:

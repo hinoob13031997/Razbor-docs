@@ -254,7 +254,9 @@ def _contract_card(ctx: Ctx, cid: int) -> dict | None:
     for x in dls:
         x["days"] = (date.fromisoformat(x["date"]) - today).days
     checks = matcher.compare_with_crm(c, docs)
-    acts = next_actions(c, facts, dls, rules.fresh_level(c.get("last_doc_at"), today, p)["level"], p, today, checks)
+    flags = rules.derive(c, facts, p, today)["flags"]
+    acts = next_actions(c, facts, dls, rules.fresh_level(c.get("last_doc_at"), today, p)["level"], p, today, checks,
+                        flags)
     rec = templates.RECOMMEND.get(c.get("sit") or "pre")
     if c.get("sit") == "ip" and c.get("ip_stalled"):
         rec = "ip_new"
@@ -510,7 +512,13 @@ class Handler(BaseHTTPRequestHandler):
             def run(j: Job) -> dict:
                 def prog(n: int, m: str) -> None:
                     j.done, j.msg = n, m
-                res = crm.import_crm(st, str(dst), prog, j.cancel)
+                try:
+                    res = crm.import_crm(st, str(dst), prog, j.cancel)
+                finally:  # копию выгрузки не храним: данные уже в базе
+                    try:
+                        os.remove(dst)
+                    except OSError:
+                        pass
                 j.msg = "Считаю сроки"
                 rules.recalc_contracts(st, progress=lambda n, m: setattr(j, "done", n), cancel=j.cancel)
                 return res

@@ -11,8 +11,8 @@ from datetime import date
 from .rules import d, fmt, months_between
 
 # уровни: 0 — срочно (просрочено или ≤ urgent_days), 1 — скоро (≤ 90 дн.), 2 — плановое, 3 — данные/проверка
-LEVEL_CLS = {0: "red", 1: "amb", 2: "blue", 3: "gray"}
-LEVEL_LABEL = {0: "Срочно", 1: "Скоро", 2: "По плану", 3: "Проверить данные"}
+LEVEL_CLS = {0: "red", 1: "amb", 2: "blue", 3: "gray", 4: "teal"}
+LEVEL_LABEL = {0: "Срочно", 1: "Скоро", 2: "По плану", 3: "Проверить данные", 4: "Без действий"}
 
 
 def _days(iso: str | None, today: date) -> int | None:
@@ -41,7 +41,7 @@ def _when(days: int | None, iso: str | None) -> str:
 
 
 def next_actions(c: dict, facts: dict, deadlines: list[dict], fresh_level: str, p: dict, today: date,
-                 checks: list[str] | None = None) -> list[dict]:
+                 checks: list[str] | None = None, flags: dict | None = None) -> list[dict]:
     """Список шагов по договору, самый важный первым.
 
     Каждый шаг: title, why (основание), when (срок словами), date, level, cls, tpl (шаблон), go (куда перейти).
@@ -49,13 +49,15 @@ def next_actions(c: dict, facts: dict, deadlines: list[dict], fresh_level: str, 
     urgent = p.get("urgent_days", 30)
     dl = {x["kind"]: x for x in deadlines}
     sit = c.get("sit") or "pre"
+    fl = flags or {}
     out: list[dict] = []
 
     def add(title: str, why: str, level: int, iso: str | None = None, tpl: str | None = None,
-            go: str | None = None) -> None:
+            go: str | None = None, passed: bool = False) -> None:
         days = _days(iso, today)
         out.append({"title": title, "why": why, "when": _when(days, iso), "date": iso, "days": days,
-                    "level": level, "cls": LEVEL_CLS[level], "label": LEVEL_LABEL[level], "tpl": tpl, "go": go})
+                    "level": level, "cls": "red" if passed else LEVEL_CLS[level],
+                    "label": "Срок прошёл" if passed else LEVEL_LABEL[level], "tpl": tpl, "go": go})
 
     def by_deadline(kind: str, title: str, why: str, tpl: str | None = None, overdue_title: str | None = None,
                     overdue_why: str | None = None) -> bool:
@@ -64,7 +66,7 @@ def next_actions(c: dict, facts: dict, deadlines: list[dict], fresh_level: str, 
             return False
         days = _days(x["date"], today)
         if days is not None and days < 0 and overdue_title:
-            add(overdue_title, overdue_why or x["rule"], 0, x["date"], None)
+            add(overdue_title, overdue_why or x["rule"], 3, x["date"], None, passed=True)
         else:
             add(title, f"{why} Расчёт: {x['rule']}.", _level(days, urgent), x["date"], tpl)
         return True
@@ -90,6 +92,21 @@ def next_actions(c: dict, facts: dict, deadlines: list[dict], fresh_level: str, 
     elif sit == "liq":
         add("Проверить ликвидацию организации",
             "Рабочий статус «ликвидация». Проверьте выписку ЕГРЮЛ и решите о требовании к ликвидатору или списании.", 1)
+    elif sit == "closed":
+        add("Долг исполнен / погашен: действий не требуется",
+            f"Статус в CRM: {fl.get('status') or fl.get('ip_status') or 'исполнено'}."
+            + (f" Основание окончания ИП: {fl['reason']}." if fl.get("reason") else ""), 4)
+    elif sit == "stop":
+        add("Работа остановлена (СТОП): уточнить причину", "Перед любыми действиями уточните, почему работа остановлена.", 4)
+    elif sit == "ip_filed":
+        add("Заявление о возбуждении ИП подано: проверить возбуждение",
+            "Статус ИП в CRM «Подано». Проверьте, возбуждено ли производство, и внесите номер ИП.", 1)
+    elif sit == "ip_end" and fl.get("ended_nodate"):
+        add("Уточнить дату окончания ИП и вернулся ли лист",
+            f"Статус ИП «{fl.get('ip_status')}», даты окончания нет: срок повторного предъявления не посчитать.", 3)
+    elif sit == "ip_end" and fl.get("no_reoffer"):
+        add("ИП окончено по ст. 47: проверить основание",
+            f"Основание: {fl.get('reason')}. При окончании по ст. 47 лист не возвращается для повторного предъявления.", 3)
     elif sit == "ip_end":
         by_deadline("reoffer", "Повторно предъявить исполнительный лист", "ИП окончено, лист возвращён взыскателю.",
                     "ip_new", "Срок повторного предъявления листа истёк",
@@ -118,7 +135,7 @@ def next_actions(c: dict, facts: dict, deadlines: list[dict], fresh_level: str, 
         x = dl.get("limit")
         add("Срок давности истёк: проверить перерывы",
             f"Давность истекла {fmt(x['date']) if x else ''}. Проверьте частичные оплаты и признание долга. "
-            "Если перерывов нет — решение о списании или уступке.", 0, x["date"] if x else None)
+            "Если перерывов нет — решение о списании или уступке.", 3, x["date"] if x else None, passed=True)
     else:  # pre
         if dl.get("limit"):
             by_deadline("limit", "Подать иск или заявление о судебном приказе",
@@ -126,10 +143,14 @@ def next_actions(c: dict, facts: dict, deadlines: list[dict], fresh_level: str, 
         else:
             add("Уточнить дату последнего платежа", "Без неё срок исковой давности не посчитать.", 3)
 
+    if fl.get("sa_cancel"):
+        add("Судебный акт отменён: решить о новом обращении в суд",
+            f"ИП окончено в связи с отменой судебного акта ({fl.get('reason')}).", 1, None, "claim")
+
     # --- общее: данные и документы
     if checks:
         add("Проверить расхождения CRM и документов", "; ".join(checks[:2]), 3)
-    if fresh_level == "none":
+    if fresh_level == "none" and sit not in ("closed", "stop"):
         add("Загрузить документы по договору", "Документы ещё не разбирались: ситуация определена только по CRM.", 3,
             go="batch")
     elif fresh_level == "stale":

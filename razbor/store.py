@@ -23,6 +23,8 @@ CRM_COLS = [
     "decision_date", "satisfied", "il_type", "il_no", "il_norm", "il_date", "fssp_date",
     "fssp_otdel", "fssp_paid", "fssp_actual", "bankrupt", "bankrupt_date", "bankrupt_case",
     "death_date", "estate_no", "notary", "cession_no", "cession_date", "address",
+    "crm_id", "ext_id", "status_ov", "inn_status", "ip_status", "ip_no", "ip_norm", "ip_rise", "ip_renewal",
+    "ip_end_crm", "ip_susp", "ip_end_reason",
 ]
 REAL_COLS = {"debt", "principal_left", "principal_court", "principal_granted", "principal_cession",
              "principal_initial", "penalties", "fee", "last_pay_sum", "fssp_paid"}
@@ -30,21 +32,17 @@ REAL_COLS = {"debt", "principal_left", "principal_court", "principal_granted", "
 DERIVED_COLS = ["sit", "next_dl_date", "next_dl_name", "ip_state", "ip_start", "ip_end",
                 "ip_stalled", "ip_months"]
 
+CONTRACTS_DDL = (
+    "id INTEGER PRIMARY KEY, ckey TEXT NOT NULL UNIQUE, number_norm TEXT NOT NULL, "
+    + ", ".join(f"{k} {'REAL' if k in REAL_COLS else ('INTEGER' if k == 'bankrupt' else 'TEXT')}" for k in CRM_COLS)
+    + ", sit TEXT, next_dl_date TEXT, next_dl_name TEXT, ip_state TEXT, ip_start TEXT, ip_end TEXT,"
+    " ip_stalled INTEGER DEFAULT 0, ip_months INTEGER, last_doc_at TEXT, last_doc_by TEXT, docs_count INTEGER DEFAULT 0,"
+    " next_action TEXT, next_action_level INTEGER"
+)
+
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS contracts(
-  id INTEGER PRIMARY KEY,
-  number TEXT NOT NULL, number_norm TEXT NOT NULL UNIQUE,
-  contract_date TEXT, fio TEXT, fio_norm TEXT, surname_key TEXT, birth TEXT, inn TEXT, kind TEXT,
-  debt REAL, principal_left REAL, principal_court REAL, principal_granted REAL, principal_cession REAL,
-  principal_initial REAL, penalties REAL, fee REAL, last_pay_date TEXT, last_pay_sum REAL, overdue_end TEXT,
-  status TEXT, responsible TEXT, creditor TEXT, court TEXT, suit_date TEXT, case_no TEXT, case_norm TEXT,
-  decision_date TEXT, satisfied TEXT, il_type TEXT, il_no TEXT, il_norm TEXT, il_date TEXT, fssp_date TEXT,
-  fssp_otdel TEXT, fssp_paid REAL, fssp_actual TEXT, bankrupt INTEGER, bankrupt_date TEXT, bankrupt_case TEXT,
-  death_date TEXT, estate_no TEXT, notary TEXT, cession_no TEXT, cession_date TEXT, address TEXT,
-  sit TEXT, next_dl_date TEXT, next_dl_name TEXT, ip_state TEXT, ip_start TEXT, ip_end TEXT,
-  ip_stalled INTEGER DEFAULT 0, ip_months INTEGER,
-  last_doc_at TEXT, last_doc_by TEXT, docs_count INTEGER DEFAULT 0
-);
+CREATE TABLE IF NOT EXISTS contracts({CONTRACTS_COLS});
+CREATE INDEX IF NOT EXISTS ix_c_num ON contracts(number_norm);
 CREATE INDEX IF NOT EXISTS ix_c_inn ON contracts(inn);
 CREATE INDEX IF NOT EXISTS ix_c_birth ON contracts(birth);
 CREATE INDEX IF NOT EXISTS ix_c_surname ON contracts(surname_key);
@@ -104,11 +102,25 @@ class Store:
         self._local = threading.local()
         self._write_lock = threading.RLock()
         with self.write() as c:
-            c.executescript(SCHEMA)
+            old = {r[1] for r in c.execute("PRAGMA table_info(contracts)")}
+            if old and "ckey" not in old:  # база прошлой версии: ключ был номер договора — переносим
+                c.execute("ALTER TABLE contracts RENAME TO contracts_v1")
+                c.execute(f"CREATE TABLE contracts({CONTRACTS_DDL})")
+                new = {r[1] for r in c.execute("PRAGMA table_info(contracts)")}
+                common = [x for x in old if x in new and x not in ("ckey",)]
+                c.execute(f"INSERT INTO contracts(ckey, {','.join(common)}) SELECT 'n:' || number_norm, "
+                          f"{','.join(common)} FROM contracts_v1")
+                c.execute("DROP TABLE contracts_v1")
+                for ix in ("ix_c_inn", "ix_c_birth", "ix_c_surname", "ix_c_case", "ix_c_il", "ix_c_sit", "ix_c_dl",
+                           "ix_c_stalled", "ix_c_ip"):
+                    c.execute(f"DROP INDEX IF EXISTS {ix}")
+            c.executescript(SCHEMA.replace("{CONTRACTS_COLS}", CONTRACTS_DDL))
             have = {r[1] for r in c.execute("PRAGMA table_info(contracts)")}
-            for col, typ in (("next_action", "TEXT"), ("next_action_level", "INTEGER")):
+            extra = [(k, "REAL" if k in REAL_COLS else "TEXT") for k in CRM_COLS]
+            for col, typ in extra + [("next_action", "TEXT"), ("next_action_level", "INTEGER")]:
                 if col not in have:  # база от прошлой версии
                     c.execute(f"ALTER TABLE contracts ADD COLUMN {col} {typ}")
+            c.execute("CREATE INDEX IF NOT EXISTS ix_c_ip ON contracts(ip_norm)")
 
     # ------------------------------------------------------------ соединения
     def conn(self) -> sqlite3.Connection:
@@ -165,19 +177,19 @@ class Store:
                       (key, value))
 
     # ------------------------------------------------------------ портфель
-    def upsert_contracts(self, rows: list[dict], norm_numbers: list[str]) -> tuple[int, int]:
+    def upsert_contracts(self, rows: list[dict], keys: list[str], norm_numbers: list[str]) -> tuple[int, int]:
         """Добавить или обновить договоры пачкой. Возвращает (добавлено, обновлено)."""
         if not rows:
             return 0, 0
         use = [k for k in CRM_COLS if k in rows[0]]  # обновляем только колонки, которые есть в выгрузке
-        cols = ["number_norm"] + use
+        cols = ["ckey", "number_norm"] + use
         ph = ",".join("?" * len(cols))
         # пустое значение в новой строке не затирает известное (несколько строк на договор, частичные выгрузки)
         upd = ",".join(f"{c}=COALESCE(excluded.{c}, contracts.{c})" for c in use if c != "number")
-        sql = f"INSERT INTO contracts({','.join(cols)}) VALUES({ph}) ON CONFLICT(number_norm) DO UPDATE SET {upd}"
+        sql = f"INSERT INTO contracts({','.join(cols)}) VALUES({ph}) ON CONFLICT(ckey) DO UPDATE SET number_norm=excluded.number_norm, {upd}"
         with self.write() as c:
             before = c.execute("SELECT COUNT(*) FROM contracts").fetchone()[0]
-            c.executemany(sql, [[nn] + [r.get(k) for k in use] for nn, r in zip(norm_numbers, rows)])
+            c.executemany(sql, [[k, nn] + [r.get(x) for x in use] for k, nn, r in zip(keys, norm_numbers, rows)])
             after = c.execute("SELECT COUNT(*) FROM contracts").fetchone()[0]
         added = after - before
         return added, len(rows) - added
@@ -193,7 +205,7 @@ class Store:
         return out
 
     def contracts_by(self, column: str, values: list[str]) -> list[dict]:
-        assert column in ("inn", "birth", "surname_key", "case_norm", "il_norm")
+        assert column in ("inn", "birth", "surname_key", "case_norm", "il_norm", "ip_norm")
         out: list[dict] = []
         for i in range(0, len(values), 400):
             part = values[i:i + 400]

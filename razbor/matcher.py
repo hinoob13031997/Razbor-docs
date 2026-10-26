@@ -74,6 +74,9 @@ def match_document(store: Store, a: Analysis) -> dict:
     cases = [norm_number(x) for x in ids.get("cases", [])]
     for c in store.contracts_by("case_norm", cases) if cases else []:
         hit(c, "case", 80, f"номер дела {c['case_no']}")
+    ips = [norm_number(x) for x in ids.get("ips", [])]
+    for c in store.contracts_by("ip_norm", ips) if ips else []:
+        hit(c, "ip", 85, f"номер ИП {c['ip_no']}")
     writs = [norm_number(x) for x in ids.get("writs", [])]
     for c in store.contracts_by("il_norm", writs) if writs else []:
         hit(c, "il", 80, f"исполнительный лист {c['il_no']}")
