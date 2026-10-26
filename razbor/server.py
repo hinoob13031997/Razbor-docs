@@ -456,6 +456,9 @@ class Handler(BaseHTTPRequestHandler):
             out = {
                 "today": today.isoformat(), "version": VERSION, "total": total, "sit": sc,
                 "overdue": st.scalar("SELECT COUNT(*) FROM contracts WHERE next_dl_date < ?", (today.isoformat(),)),
+                "kinds": st.q("SELECT kind, MIN(name) AS name, SUM(date >= ? AND date <= ?) AS soon, SUM(date < ?) AS passed, "
+                              "COUNT(*) AS total FROM deadlines GROUP BY kind ORDER BY soon DESC",
+                              (today.isoformat(), until, today.isoformat())),
                 "urgent": st.scalar("SELECT COUNT(*) FROM contracts WHERE next_dl_date >= ? AND next_dl_date <= ?",
                                     (today.isoformat(), until)),
                 "stalled": st.scalar("SELECT COUNT(*) FROM contracts WHERE ip_stalled=1"),

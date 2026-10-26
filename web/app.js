@@ -121,7 +121,7 @@ const NAV = [
   ["#/portfolio", "Портфель", "M4 6h16M4 12h16M4 18h16"],
   ["#/batch", "Загрузка документов", "M12 16V4m0 0l-4 4m4-4l4 4M4 20h16"],
   ["#/folders", "Подключённые папки", "M3 7h6l2 2h10v10H3z"],
-  ["#/deadlines", "Сроки", "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "overdue"],
+  ["#/deadlines", "Сроки", "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "urgent"],
   ["#/ip", "Исполнительные производства", "M5 4h10l4 4v12H5zM14 4v5h5"],
   ["#/templates", "Шаблоны документов", "M6 3h9l4 4v14H6zM9 12h7M9 16h7"],
   ["#/settings", "Настройки", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM4 12h2m12 0h2M12 4v2m0 12v2"],
@@ -162,7 +162,7 @@ async function route() {
   window.scrollTo(0, 0);
   try {
     const sum = await api("summary");
-    renderNav(path === "#/" || path === "#" ? "#/" : path, { overdue: sum.overdue });
+    renderNav(path === "#/" || path === "#" ? "#/" : path, { urgent: sum.urgent });
     const screens = { "": Dash, portfolio: Portfolio, batch: Batch, card: Card, deadlines: Deadlines, ip: Ip, templates: Templates, tpl: Tpl, settings: Settings, folders: Folders };
     const fn = screens[parts[0] || ""] || Dash;
     const node = await fn(parts.slice(1), params, sum);
@@ -240,9 +240,18 @@ async function Dash(_, __, s) {
     header("Сводка", "Сегодня " + fd(s.today) + ". Что горит и куда смотреть в первую очередь.", crmButton("Обновить портфель из CRM")),
     h("div", { class: "grid g4" },
       h("div", { class: "card kpi" }, h("div", { class: "l" }, "Договоров в портфеле"), h("div", { class: "n" }, num(s.total)), h("div", { class: "s" }, "разобрано по документам: " + num(s.analysed))),
-      h("a", { class: "card kpi", href: "#/deadlines?period=overdue" }, h("div", { class: "l" }, "Сроки просрочены"), h("div", { class: "n", style: "color:#9B2A1E" }, num(s.overdue)), h("div", { class: "s" }, "открыть список")),
-      h("a", { class: "card kpi", href: "#/deadlines?period=" + s.urgent_days }, h("div", { class: "l" }, "Ближайшие " + s.urgent_days + " дней"), h("div", { class: "n", style: "color:#7C4300" }, num(s.urgent)), h("div", { class: "s" }, "открыть сроки")),
-      h("a", { class: "card kpi", href: "#/ip" }, h("div", { class: "l" }, "ИП без движения"), h("div", { class: "n", style: "color:#7C4300" }, num(s.stalled)), h("div", { class: "s" }, "из " + num(s.ip_active) + " действующих ИП"))),
+      h("a", { class: "card kpi", href: "#/deadlines?period=" + s.urgent_days }, h("div", { class: "l" }, "Срочно: сроки в ближайшие " + s.urgent_days + " дней"), h("div", { class: "n", style: "color:#9B2A1E" }, num(s.urgent)), h("div", { class: "s" }, "договоров, где ещё можно успеть")),
+      h("a", { class: "card kpi", href: "#/ip" }, h("div", { class: "l" }, "ИП без движения"), h("div", { class: "n", style: "color:#7C4300" }, num(s.stalled)), h("div", { class: "s" }, "из " + num(s.ip_active) + " действующих ИП")),
+      h("a", { class: "card kpi", href: "#/portfolio?sit=passed" }, h("div", { class: "l" }, "Сроки уже прошли"), h("div", { class: "n", style: "color:#465266" }, num(s.overdue)), h("div", { class: "s" }, "проверить, что сделано; не срочно"))),
+    s.kinds && s.kinds.length ? h("div", { class: "card mb" }, h("h2", null, "Сроки по видам"),
+      h("div", { class: "scroll" }, h("table", { class: "tbl" },
+        h("thead", null, h("tr", null, h("th", null, "Вид срока"), h("th", { class: "r" }, "В ближайшие " + s.urgent_days + " дней"), h("th", { class: "r" }, "Уже прошли"), h("th", { class: "r" }, "Всего"))),
+        h("tbody", null, s.kinds.map((k) => h("tr", null,
+          h("td", null, DL_TITLES[k.kind] || k.name),
+          h("td", { class: "r" }, k.soon ? h("a", { class: "link", href: "#/deadlines?period=" + s.urgent_days + "&kind=" + k.kind }, num(k.soon)) : "0"),
+          h("td", { class: "r" }, k.passed ? h("a", { class: "link", style: "color:#465266", href: "#/deadlines?period=overdue&kind=" + k.kind }, num(k.passed)) : "0"),
+          h("td", { class: "r" }, num(k.total))))))),
+      h("p", { class: "small muted mt" }, "Срок по наследству считается условно (3 года с даты смерти), поэтому у умерших должников он часто уже «прошёл»: это сигнал проверить, а не просрочка.")) : null,
     h("div", { class: "grid g2" },
       h("div", { class: "card" }, h("h2", null, "Ближайшие сроки"),
         s.next.length ? s.next.map((r) => h("div", { class: "row sp", style: "padding:6px 0;border-top:1px solid #EBEEF3" },
@@ -264,7 +273,7 @@ async function Dash(_, __, s) {
 
 // ------------------------------------------------------------------ Портфель
 const SIT_SHORT = { ip: "Идёт ИП", ip_end: "ИП окончено", court: "Есть решение", pre: "Досудебная", expired: "Давность истекла", death: "Умер", bankr: "Банкрот", liq: "Ликвидирована", closed: "Исполнено", stop: "СТОП", ip_filed: "Подано на ИП" };
-const PF_FILTERS = [["", "Все"], ["urgent", "Срочные сроки"], ["stalled", "ИП без движения"], ["death", "Умер"], ["bankr", "Банкротство"], ["ip_end", "ИП окончено"], ["ip", "Идёт ИП"], ["ip_filed", "Подано на ИП"], ["court", "Есть решение"], ["expired", "Давность истекла"], ["pre", "Досудебная"], ["closed", "Исполнено"], ["stop", "СТОП"]];
+const PF_FILTERS = [["", "Все"], ["urgent", "Срочные сроки"], ["passed", "Сроки прошли"], ["stalled", "ИП без движения"], ["death", "Умер"], ["bankr", "Банкротство"], ["ip_end", "ИП окончено"], ["ip", "Идёт ИП"], ["ip_filed", "Подано на ИП"], ["court", "Есть решение"], ["expired", "Давность истекла"], ["pre", "Досудебная"], ["closed", "Исполнено"], ["stop", "СТОП"]];
 
 async function Portfolio(_, params) {
   if (params.has("sit")) ui.pf = { q: "", sit: params.get("sit"), fresh: "", page: 1 };
@@ -608,11 +617,12 @@ async function Folders() {
 function confirmBox() { return true; }
 
 // ------------------------------------------------------------------ Сроки
+const DL_TITLES = { limit: "Исковая давность", reoffer: "Повторное предъявление листа", present: "Предъявление листа", rtk: "Реестр кредиторов (банкротство)", estate: "Наследство (условно)", check: "Плановая проверка ИП" };
 const DL_KINDS = [["", "Все"], ["limit", "Исковая давность"], ["reoffer", "Повторное предъявление"], ["present", "Предъявить лист"], ["rtk", "Банкротство"], ["estate", "Наследство"], ["check", "Проверка ИП"]];
 const DL_PERIODS = [["overdue", "Просрочены"], ["30", "30 дней"], ["90", "90 дней"], ["365", "Год"], ["all", "Все"]];
 
 async function Deadlines(_, params) {
-  if (params.has("period")) ui.dl = { kind: "", period: params.get("period"), page: 1 };
+  if (params.has("period") || params.has("kind")) ui.dl = { kind: params.get("kind") || "", period: params.get("period") || "all", page: 1 };
   const dl = ui.dl;
   const r = await api("deadlines?" + new URLSearchParams({ kind: dl.kind, period: dl.period, page: dl.page }));
   const pages = Math.ceil(r.total / 100);

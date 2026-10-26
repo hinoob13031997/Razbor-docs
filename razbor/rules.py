@@ -258,7 +258,10 @@ def recalc_contracts(store: Store, ids: list[int] | None = None, today: date | N
         for r in rows:
             c = dict(r)
             res = derive(c, facts_all.get(c["id"], {}), p, today)
-            first = res["deadlines"][0] if res["deadlines"] else None
+            # «ближайший срок» — ближайший предстоящий; если все прошли — последний из прошедших
+            tiso = today.isoformat()
+            upcoming = [x for x in res["deadlines"] if x["date"] >= tiso]
+            first = upcoming[0] if upcoming else (res["deadlines"][-1] if res["deadlines"] else None)
             ip = res["ip"]
             c2 = dict(c, sit=res["sit"], ip_stalled=ip["stalled"], ip_start=ip["start"])
             acts = next_actions(c2, facts_all.get(c["id"], {}), res["deadlines"],

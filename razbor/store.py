@@ -223,8 +223,11 @@ class Store:
             where.append("(number_norm LIKE ? OR fio_norm LIKE ? OR inn LIKE ?)")
             args += [f"%{nn}%", f"%{like}%", f"{re.sub(r'[^0-9]', '', q) or '@@'}%"]
         if sit == "urgent":
-            where.append("next_dl_date IS NOT NULL AND next_dl_date <= ?")
-            args.append(_plus_days(today, 30))
+            where.append("next_dl_date >= ? AND next_dl_date <= ?")
+            args += [_plus_days(today, 0), _plus_days(today, 30)]
+        elif sit == "passed":
+            where.append("next_dl_date < ?")
+            args.append(_plus_days(today, 0))
         elif sit == "stalled":
             where.append("ip_stalled=1")
         elif sit:
