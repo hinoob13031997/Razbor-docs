@@ -29,10 +29,12 @@ ALIASES: dict[str, list[str]] = {
     "responsible": ["operator_name", "id_user", "ответственный сотрудник", "ответственный", "оператор"],
     "status": ["status_name", "рабочий статус", "статус", "id_status"],
     "status_ov": ["status_ov_name", "статус ов"],
-    "debt": ["dolg_sum", "ocs_sum", "сумма долга", "сумма долга исх", "остаток долга"],
+    "debt": ["dolg_sum", "сумма долга", "сумма долга исх", "остаток долга без гп", "остаток основного долга"],
+    "debt_total": ["ocs_sum", "остаток задолженности", "остаток долга", "остаток с гп", "сумма долга с гп"],
     "principal_left": ["dolg_osn_ocs", "основной долг остаток"],
     "principal_court": ["основной долг в суд"],
-    "principal_granted": ["основной долг удовлетворено"],
+    "principal_granted": ["основной долг удовлетворено", "sum_sud", "сумма по решению", "взыскано по решению",
+                          "сумма по решению суда"],
     "principal_cession": ["основной долг по цессии"],
     "principal_initial": ["dolg_osn", "основной долг исх"],
     "penalties": ["peny", "пени исх"],
@@ -77,7 +79,7 @@ IGNORED = {"phone", "email", "телефон", "id_operator", "id_end_ip_reason"
 DATE_FIELDS = {"contract_date", "birth", "last_pay_date", "overdue_end", "suit_date", "decision_date", "il_date",
                "fssp_date", "fssp_actual", "bankrupt_date", "death_date", "cession_date", "ip_rise", "ip_renewal",
                "ip_end_crm", "ip_susp"}
-MONEY_FIELDS = {"debt", "principal_left", "principal_court", "principal_granted", "principal_cession",
+MONEY_FIELDS = {"debt_total", "debt", "principal_left", "principal_court", "principal_granted", "principal_cession",
                 "principal_initial", "penalties", "fee", "last_pay_sum", "fssp_paid"}
 RECOMMENDED = ["number", "fio", "birth", "inn", "debt", "last_pay_date", "status"]
 
@@ -95,7 +97,7 @@ FIELD_TITLES = {
     "fssp_actual": "Дата актуальности данных ФССП", "bankrupt": "Банкрот", "bankrupt_date": "Дата признания банкротом",
     "bankrupt_case": "Дело о банкротстве", "death_date": "Дата смерти", "estate_no": "Наследственное дело",
     "notary": "Нотариус", "cession_no": "Акт приёма-передачи №", "cession_date": "Акт приёма-передачи, дата",
-    "address": "Адрес регистрации", "crm_id": "ID в CRM", "ext_id": "Внешний ID", "status_ov": "Статус ОВ",
+    "address": "Адрес регистрации", "crm_id": "ID в CRM", "debt_total": "Остаток задолженности (с госпошлиной)", "ext_id": "Внешний ID", "status_ov": "Статус ОВ",
     "inn_status": "Статус ИНН", "ip_status": "Статус ИП", "ip_no": "Номер ИП", "ip_rise": "Дата возбуждения ИП",
     "ip_renewal": "Дата возобновления ИП", "ip_end_crm": "Дата окончания ИП", "ip_susp": "Дата приостановления ИП",
     "ip_end_reason": "Причина окончания ИП",

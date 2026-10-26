@@ -113,6 +113,15 @@ def collect_data(store: Store, cid: int) -> dict[str, str]:
             amount = None
     if amount is None:
         amount = c.get("principal_left") or c.get("debt")
+    notes: list[str] = []
+    if amount is None and c.get("debt_total"):
+        if c.get("fee"):  # остаток с госпошлиной минус госпошлина
+            amount = c["debt_total"] - c["fee"]
+            notes.append(f"Сумма долга посчитана как остаток с госпошлиной ({money(c['debt_total'])} ₽) минус "
+                         f"госпошлина ({money(c['fee'])} ₽).")
+        else:
+            notes.append(f"В CRM есть только остаток задолженности с госпошлиной ({money(c['debt_total'])} ₽). "
+                         "Госпошлина отдельно не указана, поэтому сумму долга впишите вручную.")
     d["amount"] = money(amount)
     d["fee"] = money(c.get("fee"))
     d["caseNo"] = facts.get("case_no") or c.get("case_no")
@@ -136,6 +145,9 @@ def collect_data(store: Store, cid: int) -> dict[str, str]:
     d["manager"] = None
     out = {k: v for k, v in d.items() if v}
     out.update(store.manual_for(cid))
+    if "amount" in store.manual_for(cid):
+        notes = []
+    out["_notes"] = notes  # type: ignore[assignment]
     return out
 
 
@@ -170,7 +182,7 @@ def render(store: Store, cid: int, tpl_id: str) -> dict:
             miss.append(x)
     filled = sum(1 for x in head + body if x["filled"])
     return {"id": t["id"], "title": t["title"], "head": head, "body": body, "filled": filled,
-            "missing": [{"key": k, "label": lab} for k, lab in miss]}
+            "missing": [{"key": k, "label": lab} for k, lab in miss], "notes": data.get("_notes", [])}
 
 
 def safe_name(s: str) -> str:

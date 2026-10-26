@@ -99,6 +99,24 @@ p = templates.make_docx(st, cid, "ip_new", tmp)
 z = zipfile.ZipFile(p)
 check("ООО Тест" in z.read("word/document.xml").decode("utf-8") and z.testzip() is None, "Word-файл собран")
 
+# сумма: в CRM только остаток с госпошлиной
+import csv as _csv  # noqa: E402
+
+gp = os.path.join(tmp, "gp.csv")
+with open(gp, "w", newline="", encoding="utf-8") as f:
+    w = _csv.writer(f, delimiter=";")
+    w.writerow(["id", "number_dog", "fio", "ocs_sum", "gospohlina"])
+    w.writerow(["1", "ГП-1", "Тестов Тест Тестович", "10500.00", "500"])
+    w.writerow(["2", "ГП-2", "Тестов Тест Тестович", "10500.00", "NULL"])
+st3 = Store(os.path.join(tmp, "r3.sqlite"))
+crm.import_crm(st3, gp)
+c1 = st3.one("SELECT id FROM contracts WHERE number='ГП-1'")["id"]
+c2 = st3.one("SELECT id FROM contracts WHERE number='ГП-2'")["id"]
+r1 = templates.render(st3, c1, "claim")
+check("10 000,00" in "".join(x["text"] for x in r1["body"]), "остаток с ГП минус ГП = сумма долга в иске")
+r2 = templates.render(st3, c2, "claim")
+check(any(m["key"] == "amount" for m in r2["missing"]) and r2["notes"], "без госпошлины сумма не подставляется, есть подсказка")
+
 # сервер целиком
 env = dict(os.environ, RAZBOR_DATA=os.path.join(tmp, "srv"), RAZBOR_PRINT_URL="1")
 pr = subprocess.Popen([sys.executable, os.path.join(ROOT, "app.py"), "--no-browser"], env=env, stdout=subprocess.PIPE, text=True)

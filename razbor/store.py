@@ -23,10 +23,10 @@ CRM_COLS = [
     "decision_date", "satisfied", "il_type", "il_no", "il_norm", "il_date", "fssp_date",
     "fssp_otdel", "fssp_paid", "fssp_actual", "bankrupt", "bankrupt_date", "bankrupt_case",
     "death_date", "estate_no", "notary", "cession_no", "cession_date", "address",
-    "crm_id", "ext_id", "status_ov", "inn_status", "ip_status", "ip_no", "ip_norm", "ip_rise", "ip_renewal",
+    "debt_total", "crm_id", "ext_id", "status_ov", "inn_status", "ip_status", "ip_no", "ip_norm", "ip_rise", "ip_renewal",
     "ip_end_crm", "ip_susp", "ip_end_reason",
 ]
-REAL_COLS = {"debt", "principal_left", "principal_court", "principal_granted", "principal_cession",
+REAL_COLS = {"debt_total", "debt", "principal_left", "principal_court", "principal_granted", "principal_cession",
              "principal_initial", "penalties", "fee", "last_pay_sum", "fssp_paid"}
 
 DERIVED_COLS = ["sit", "next_dl_date", "next_dl_name", "ip_state", "ip_start", "ip_end",
@@ -241,7 +241,7 @@ class Store:
         w = (" WHERE " + " AND ".join(where)) if where else ""
         total = self.scalar(f"SELECT COUNT(*) FROM contracts{w}", args)
         rows = self.q(
-            "SELECT id, number, fio, kind, debt, principal_left, sit, next_dl_date, next_dl_name, ip_state, ip_start, ip_end,"
+            "SELECT id, number, fio, kind, debt, debt_total, principal_left, sit, next_dl_date, next_dl_name, ip_state, ip_start, ip_end,"
             " ip_months, ip_stalled, last_doc_at, last_doc_by, docs_count, next_action, next_action_level FROM contracts" + w +
             " ORDER BY next_dl_date IS NULL, next_dl_date, id LIMIT ? OFFSET ?", args + [size, (max(1, page) - 1) * size])
         return {"total": total, "rows": rows}

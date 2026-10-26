@@ -100,7 +100,8 @@ def match_document(store: Store, a: Analysis) -> dict:
         scores = sorted(e["types"].values(), reverse=True)
         total = min(150, scores[0] + 10 * (len(scores) - 1))
         c = rows[cid]
-        cands.append({"id": cid, "number": c["number"], "fio": c["fio"], "birth": c["birth"], "debt": c["debt"],
+        cands.append({"id": cid, "number": c["number"], "fio": c["fio"], "birth": c["birth"],
+                      "debt": c["debt"] if c.get("debt") is not None else c.get("debt_total"),
                       "score": total, "reasons": e["reasons"]})
     cands.sort(key=lambda x: -x["score"])
     if not cands:
