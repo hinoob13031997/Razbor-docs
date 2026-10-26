@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from . import classify as C
 from . import fields as F
+from . import namecheck as NC
 from .reader import ReadResult
 
 
@@ -66,6 +67,10 @@ class Analysis:
     text_hash: str = ""
     chars: int = 0
     ids: dict = field(default_factory=dict)
+    summary: str = ""                                    # что это за документ, простыми словами
+    issues: list = field(default_factory=list)           # возможные описки внутри документа
+    stems: frozenset = frozenset()                       # первые буквы слов документа (для сверки названия)
+    dates: list = field(default_factory=list)            # все даты текста: (ISO, чем является)
 
 
 def text_fingerprint(text: str) -> str:
@@ -93,6 +98,17 @@ def analyze(rr: ReadResult, custom: list[CustomField] | None = None) -> Analysis
     a.flags = F.find_flags(doc, cl.group, cl.key)
     a.text_hash = text_fingerprint(doc.text)
     a.ids = F.find_identifiers(doc)
+    try:
+        a.stems = NC.word_stems(doc.text)
+        a.dates = NC.date_index(doc.text, a)
+        a.summary = NC.describe(a)
+        a.issues = NC.internal_issues(doc.text, doc.head, a)
+        for wrong, right in cl.repaired:
+            a.issues.append(f"Заголовок документа написан с ошибкой или плохо распознан («{wrong}», должно быть «{right}»). "
+                            f"Вид определён по содержанию: {a.doc_label.lower()}.")
+    except Exception as e:  # расшифровка вторична: она не должна ломать чтение
+        a.summary = a.summary or ""
+        a.issues = a.issues or [f"расшифровка не построена: {type(e).__name__}"]
     for cf in custom or []:
         if cf.only_types and cl.key not in cf.only_types:
             continue
@@ -129,6 +145,8 @@ def review_reasons(rr: ReadResult, a: Analysis, ocr_warn_below: float = 70.0) ->
     for w in rr.warnings:
         if "пропущено" in w or "не все" in w:
             reasons.append(w)
+    for x in a.issues:
+        reasons.append(x)
     return reasons
 
 

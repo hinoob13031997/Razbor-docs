@@ -51,6 +51,8 @@ class Item:
     written: bool = False
     skipped: bool = False
     inplace: bool = False      # файл лежит в подключённой папке: не копируем и не удаляем
+    summary: str = ""           # что это за документ, простыми словами
+    name_check: dict = field(default_factory=dict)   # сверка названия файла с содержимым
 
 
 @dataclass
@@ -120,6 +122,8 @@ def process_item(store: Store, i: int, path: str, base: str, opts: Options, ocr,
         it.doc_key, it.doc_label, it.group = a.doc_key, a.doc_label, a.group
         it.text_hash = a.text_hash
         it.reasons = list(res.reasons)
+        it.summary = a.summary
+        it.name_check = dict(res.name_check or {})
         it.fields = matcher.display_fields(a)
         it.facts = matcher.facts_from(a)
         it.event = list(matcher.doc_event(a, it.name))

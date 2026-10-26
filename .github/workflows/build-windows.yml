@@ -34,6 +34,9 @@ jobs:
       - name: Проверка чтения полей (готовый текст, без распознавания)
         run: python tests/test_fields.py
 
+      - name: Проверка сверки названия файла с содержимым
+        run: python tests/test_namecheck.py
+
       - name: Проверка на тестовых документах (до сборки)
         env:
           RAZBOR_TESSERACT: C:\Program Files\Tesseract-OCR\tesseract.exe

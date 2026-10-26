@@ -364,7 +364,7 @@ async function Card(parts) {
   const tplBtns = [["ip_new", "Заявление об ИП"], ["rtk", "Реестр кредиторов"], ["claim", "Иск"], ["notary", "Запрос нотариусу"]];
   const docBlocks = d.documents.map((x) => {
     const body = h("div", { hidden: true, class: "fields" },
-      (x.fields || []).map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
+      (x.fields || []).map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.note && /проверить/.test(f.note) ? h("span", { class: "small", style: "color:#7C4300" }, " (" + f.note + ")") : null, f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
     return h("div", { style: "border-top:1px solid #EBEEF3;padding:8px 0" },
       h("div", { class: "row sp" },
         h("div", null, h("b", null, x.doc_label || x.name), h("div", { class: "small muted" }, x.name + " · загрузил " + (x.loaded_by || "—") + ", " + fd(x.loaded_at))),
@@ -529,6 +529,26 @@ async function BatchView(id) {
             } catch (er) { openModal([h("h2", null, "Не записалось"), h("p", { class: "err" }, er.message), h("button", { class: "btn", onclick: closeModal }, "Закрыть")]); }
           } }, "Записать в карточки"))));
   }
+  // Сверка названия файла с содержимым: понятный вывод для проверяющего
+  function nameBox(it) {
+    const nc = it.name_check;
+    if (!nc || !nc.verdict || nc.verdict === "unknown") return null;
+    if (nc.verdict === "ok") return h("div", { class: "small", style: "color:#0C5F4D;margin-top:3px" }, "✓ " + nc.title);
+    const bad = nc.verdict === "wrong";
+    const sym = { ok: "✓", typo: "≈", bad: "✗", info: "—" };
+    const tbl = h("table", { hidden: true, class: "small", style: "margin-top:6px;border-collapse:collapse;width:100%" },
+      h("tr", null, ["Что сверяли", "В названии", "В документе", ""].map((t) => h("th", { style: "text-align:left;padding:2px 8px 2px 0;color:#667" }, t))),
+      (nc.rows || []).map((r) => h("tr", null,
+        h("td", { style: "padding:2px 8px 2px 0" }, r.what), h("td", { style: "padding:2px 8px 2px 0" }, r.name),
+        h("td", { style: "padding:2px 8px 2px 0" }, r.doc), h("td", { style: "font-weight:700;color:" + (r.state === "bad" ? "#8A1C1C" : r.state === "typo" ? "#7C4300" : "#0C5F4D") }, sym[r.state] || ""))));
+    return h("div", { style: "margin-top:6px;padding:8px 10px;border-radius:8px;background:" + (bad ? "#FDECEC" : "#FFF4E0") + ";color:" + (bad ? "#8A1C1C" : "#7C4300") },
+      h("div", null, h("b", null, (bad ? "✗ " : "≈ ") + nc.title)),
+      (nc.problems || []).map((p) => h("div", { class: "small" }, p)),
+      nc.suggest ? h("div", { class: "small", style: "margin-top:4px" }, "Правильнее назвать: ", h("b", null, nc.suggest), " ",
+        h("button", { class: "btn btn-s", onclick: async (e) => { try { await navigator.clipboard.writeText(nc.suggest); e.target.textContent = "Скопировано"; } catch (er) { e.target.textContent = "Не скопировалось"; } } }, "Копировать")) : null,
+      (nc.rows || []).length ? h("div", { style: "margin-top:4px" }, h("a", { class: "link small", href: "javascript:void(0)", onclick: () => { tbl.hidden = !tbl.hidden; } }, "Что с чем сверяли")) : null,
+      tbl);
+  }
   function itemRows(b, it) {
     const det = h("tr", { hidden: true }, h("td", { colspan: 4 }, h("div", { class: "fields" }, "Загружаю…")));
     const pickable = it.status !== "error" && !it.written;
@@ -536,7 +556,11 @@ async function BatchView(id) {
     const rowMain = h("tr", null,
       h("td", null, it.written && !b.source ? h("b", null, it.name) : h("a", { class: "link", href: "/api/batch/" + id + "/file/" + it.idx, target: "_blank" }, it.name), it.rel !== it.name ? h("div", { class: "small muted" }, it.rel) : null,
         it.pages ? h("div", { class: "small muted" }, it.pages + " стр.") : null),
-      h("td", null, it.doc_label ? chip(it.doc_label, "blue") : "—", it.reasons.length ? h("div", { class: "small", style: "color:#7C4300" }, "Проверить: " + it.reasons.join("; ")) : null),
+      h("td", null, it.doc_label ? chip(it.doc_label, "blue") : "—",
+        it.summary ? h("div", { class: "small", style: "margin-top:4px" }, it.summary) : null,
+        nameBox(it),
+        it.reasons.filter((x) => !(it.name_check && it.name_check.verdict && x.indexOf(it.name_check.title) === 0)).length
+          ? h("div", { class: "small", style: "color:#7C4300;margin-top:4px" }, "Проверить: " + it.reasons.filter((x) => !(it.name_check && it.name_check.verdict && x.indexOf(it.name_check.title) === 0)).join("; ")) : null),
       h("td", null,
         ch ? [h("a", { class: "link", href: "#/card/" + ch.id }, ch.number), h("div", { class: "small muted" }, ch.fio),
           ch.fresh && ch.fresh.level !== "none" ? h("div", { class: "small", style: ch.fresh.level === "fresh" ? "color:#0C5F4D" : "color:#7C4300" }, "Уже разбирали: " + ch.fresh.ago + (ch.fresh.by ? ", " + ch.fresh.by : "")) : null]
@@ -551,7 +575,7 @@ async function BatchView(id) {
             if (!det.hidden && !det.dataset.ok) {
               const r = await api("batch/" + id + "/item/" + it.idx);
               det.dataset.ok = "1";
-              det.firstChild.firstChild.replaceChildren(...r.fields.map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
+              det.firstChild.firstChild.replaceChildren(...r.fields.map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.note && /проверить/.test(f.note) ? h("span", { class: "small", style: "color:#7C4300" }, " (" + f.note + ")") : null, f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
             }
           } }, "Что найдено") : null,
           pickable && !it.skipped ? h("button", { class: "btn btn-s", onclick: () => pickContract(b, it) }, it.chosen != null ? "Другой договор" : "Выбрать договор") : null,

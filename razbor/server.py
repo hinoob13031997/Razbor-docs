@@ -288,6 +288,7 @@ def _batch_out(b: B.Batch, ctx: Ctx, with_items: bool = True) -> dict:
             items.append({
                 "idx": i.idx, "rel": i.rel, "name": i.name, "status": i.status, "doc_label": i.doc_label,
                 "group": i.group, "pages": i.pages, "note": i.note, "reasons": i.reasons, "seen": i.seen,
+                "summary": i.summary, "name_check": i.name_check,
                 "written": i.written, "skipped": i.skipped, "chosen": i.chosen,
                 "chosen_info": ({"id": ch["id"], "number": ch["number"], "fio": ch["fio"],
                                  "fresh": _fresh(ch, p, today)} if ch else None),

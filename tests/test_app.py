@@ -81,7 +81,7 @@ rules.recalc_contracts(st2)
 src = folders.add_source(st2, fold)
 r1 = folders.scan_source(st2, src["id"], os.path.join(tmp, "batches"), lambda *a: None, __import__("threading").Event(),
                          use_ocr=ocr.available)
-check(r1["new"] == 22 and r1["auto"] >= 5, f"папка: прочитано {r1['new']}, записано сразу {r1['auto']}")
+check(r1["new"] == 23 and r1["auto"] >= 5, f"папка: прочитано {r1['new']}, записано сразу {r1['auto']}")
 check(st2.scalar("SELECT COUNT(*) FROM documents WHERE stored LIKE ?", (fold + "%",)) == r1["auto"],
       "папка: в карточке путь к исходному файлу, без копии")
 check(os.path.exists(os.path.join(fold, "01_sud_prikaz.pdf")), "папка: исходные файлы на месте")

@@ -87,7 +87,8 @@ def write_excel(summary, custom_fields) -> None:
     custom_names = [c.name for c in (custom_fields or [])]
     headers = [("№", 6), ("Файл", 34), ("Папка", 24), ("Страниц", 9), ("Прочитано стр.", 10),
                ("Как прочитан", 14), ("OCR, %", 8), ("Группа", 18), ("Вид документа", 38),
-               ("Уточнение", 40)]
+               ("Уточнение", 40), ("Что это за документ", 70), ("Сверка названия", 26),
+               ("Что не сходится в названии", 60), ("Как назвать правильно", 50)]
     headers += MAIN_FIELDS
     headers += [("Признаки", 28), ("Все суммы (руб.)", 34), ("Дубль", 8), ("Проверить", 50)]
     headers += [(n, 22) for n in custom_names]
@@ -109,6 +110,11 @@ def write_excel(summary, custom_fields) -> None:
             _put(ws_docs, row, col_of["Группа"], a.group)
             _put(ws_docs, row, col_of["Вид документа"], a.doc_label)
             _put(ws_docs, row, col_of["Уточнение"], a.title)
+            _put(ws_docs, row, col_of["Что это за документ"], a.summary)
+            nc = r.name_check or {}
+            _put(ws_docs, row, col_of["Сверка названия"], nc.get("title", ""))
+            _put(ws_docs, row, col_of["Что не сходится в названии"], " ".join(nc.get("problems", [])))
+            _put(ws_docs, row, col_of["Как назвать правильно"], nc.get("suggest", ""))
             for name, _w in MAIN_FIELDS:
                 hit = a.fields.get(name)
                 if hit is None:

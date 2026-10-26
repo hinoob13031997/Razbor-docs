@@ -125,6 +125,9 @@ def fmt_value(v) -> str:
 
 def display_fields(a: Analysis) -> list[dict]:
     out = []
+    if a.summary:
+        out.append({"name": "Что это за документ", "value": a.summary, "page": None, "snippet": "",
+                    "note": "расшифровка программы, сверьте с файлом"})
     for name, hit in a.fields.items():
         if name == "Все суммы (руб.)":
             continue

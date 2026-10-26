@@ -49,6 +49,7 @@ class DocResult:
     dup_kind: str = ""
     seconds: float = 0.0
     from_cache: bool = False
+    name_check: dict = field(default_factory=dict)   # сверка названия файла с содержимым
 
 
 @dataclass
@@ -81,6 +82,22 @@ def list_files(root: str, recursive: bool = True) -> list[str]:
     return out
 
 
+def add_name_check(res: "DocResult") -> None:
+    """Сверить название файла с содержимым; при расхождении добавить причину «проверить»."""
+    from . import namecheck
+
+    try:
+        nc = namecheck.check_name(res.name, res.analysis)
+    except Exception as e:  # сверка вторична
+        res.name_check = {"verdict": "unknown", "title": f"Сверка названия не выполнена ({type(e).__name__})",
+                          "problems": [], "rows": [], "suggest": ""}
+        return
+    res.name_check = nc.to_dict()
+    if nc.verdict in ("wrong", "typo", "generic"):
+        first = nc.problems[0] if nc.problems else ""
+        res.reasons.append(f"{nc.title}. {first}".strip() + (f" Правильнее: {nc.suggest}" if nc.suggest else ""))
+
+
 def _process(path: str, root: str, opts: Options, ocr: OcrEngine | None, cache: TextCache | None,
              custom, cancel: threading.Event) -> DocResult:
     t0 = time.time()
@@ -106,6 +123,7 @@ def _process(path: str, root: str, opts: Options, ocr: OcrEngine | None, cache: 
         res.warnings = list(rr.warnings)
         res.analysis = analyze(rr, custom)
         res.reasons = review_reasons(rr, res.analysis)
+        add_name_check(res)
     except Cancelled:
         res.error = "Остановлено пользователем"
     except ReadError as e:

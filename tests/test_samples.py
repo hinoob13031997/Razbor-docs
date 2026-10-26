@@ -78,6 +78,13 @@ def main() -> int:
                 if a.doc_key != v:
                     print(f"  ОШИБКА тип: ждали {v}, получили {a.doc_key}")
                     fails += 1
+            elif k == "name_verdict":
+                got_v = (r.name_check or {}).get("verdict")
+                if got_v != v:
+                    print(f"  ОШИБКА сверка названия: ждали {v}, получили {got_v}: {(r.name_check or {}).get('problems')}")
+                    fails += 1
+                else:
+                    print("  ок: сверка названия:", (r.name_check or {}).get("title"), "->", (r.name_check or {}).get("suggest"))
             elif k == "flags":
                 if sorted(a.flags) != sorted(v):
                     print(f"  ОШИБКА признаки: ждали {v}, получили {a.flags}")

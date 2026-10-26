@@ -8,7 +8,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import difflib
 
 HEAD_CHARS = 1800
 MIN_SCORE = 8
@@ -224,18 +225,45 @@ class Classification:
     group: str
     score: int
     cues: list[str]
+    repaired: list = field(default_factory=list)   # [(как написано в заголовке, как должно быть)]
 
 
 UNKNOWN = Classification("unknown", "Не определён", G_OTHER, 0, [])
 
 
-def classify(text: str) -> Classification:
-    if not text or len(text.strip()) < 30:
-        return UNKNOWN
+TITLE_WORDS = ["ОПРЕДЕЛЕНИЕ", "ПОСТАНОВЛЕНИЕ", "РЕШЕНИЕ", "ПРИКАЗ", "СУДЕБНЫЙ", "ИСПОЛНИТЕЛЬНЫЙ", "СВИДЕТЕЛЬСТВО",
+               "ПРЕТЕНЗИЯ", "ДОГОВОР", "АНКЕТА", "ЗАЯВЛЕНИЕ", "ТРЕБОВАНИЕ", "УВЕДОМЛЕНИЕ", "РАСЧЕТ", "РАСЧЁТ", "СПРАВКА"]
+
+
+def repair_head(text: str) -> tuple[str, list]:
+    """Исправить опечатки и искажения распознавания в первом слове строк заголовка:
+    «ОПРЕДЕЛЕНЕИЕ» -> «ОПРЕДЕЛЕНИЕ». Возвращает (исправленный текст, список исправлений)."""
+    fixes: list = []
+
+    def fix(w: str) -> str:
+        if w in TITLE_WORDS or len(w) < 6:
+            return w
+        best = difflib.get_close_matches(w.upper(), TITLE_WORDS, n=1, cutoff=0.78)
+        if best and best[0] != w.upper():
+            right = best[0] if w.isupper() else best[0].capitalize()
+            fixes.append((w, right))
+            return right
+        return w
+
+    head, tail = text[:HEAD_CHARS], text[HEAD_CHARS:]
+    lines = []
+    for line in head.split("\n"):
+        mm = re.match(r"^([\W_]*)([А-ЯЁ][А-ЯЁа-яё]{5,})(.*)$", line)
+        if mm:
+            line = mm.group(1) + fix(mm.group(2)) + mm.group(3)
+        lines.append(line)
+    return "\n".join(lines) + tail, fixes
+
+
+def _classify_plain(text: str) -> Classification | None:
     head = text[:HEAD_CHARS]
     best: Classification | None = None
-    best_ord = 0
-    for order, rule in enumerate(RULES):
+    for rule in RULES:
         score = 0
         cues: list[str] = []
         for rx, weight, zone in rule.patterns:
@@ -246,7 +274,20 @@ def classify(text: str) -> Classification:
                 cues.append(m.group(0).strip()[:50])
         if score and (best is None or score > best.score):
             best = Classification(rule.key, rule.label, rule.group, score, cues)
-            best_ord = order
+    return best
+
+
+def classify(text: str) -> Classification:
+    if not text or len(text.strip()) < 30:
+        return UNKNOWN
+    best = _classify_plain(text)
+    fixed, fixes = repair_head(text)
+    if fixes:
+        alt = _classify_plain(fixed)
+        # опечатка в заголовке: если с исправленным заголовком вид определяется лучше, берём его
+        if alt is not None and alt.score >= MIN_SCORE and (best is None or alt.score > best.score):
+            alt.repaired = fixes
+            return alt
     if best is None or best.score < MIN_SCORE:
         return UNKNOWN
     return best
