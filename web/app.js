@@ -541,7 +541,7 @@ async function BatchView(id) {
       (nc.rows || []).map((r) => h("tr", null,
         h("td", { style: "padding:2px 8px 2px 0" }, r.what), h("td", { style: "padding:2px 8px 2px 0" }, r.name),
         h("td", { style: "padding:2px 8px 2px 0" }, r.doc), h("td", { style: "font-weight:700;color:" + (r.state === "bad" ? "#8A1C1C" : r.state === "typo" ? "#7C4300" : "#0C5F4D") }, sym[r.state] || ""))));
-    return h("div", { style: "margin-top:6px;padding:8px 10px;border-radius:8px;background:" + (bad ? "#FDECEC" : "#FFF4E0") + ";color:" + (bad ? "#8A1C1C" : "#7C4300") },
+    return h("div", { style: "margin-top:6px;padding:8px 10px;border-radius:8px;overflow-wrap:anywhere;background:" + (bad ? "#FDECEC" : "#FFF4E0") + ";color:" + (bad ? "#8A1C1C" : "#7C4300") },
       h("div", null, h("b", null, (bad ? "✗ " : "≈ ") + nc.title)),
       (nc.problems || []).map((p) => h("div", { class: "small" }, p)),
       nc.suggest ? h("div", { class: "small", style: "margin-top:4px" }, "Правильнее назвать: ", h("b", null, nc.suggest), " ",
@@ -554,7 +554,7 @@ async function BatchView(id) {
     const pickable = it.status !== "error" && !it.written;
     const ch = it.chosen_info;
     const rowMain = h("tr", null,
-      h("td", null, it.written && !b.source ? h("b", null, it.name) : h("a", { class: "link", href: "/api/batch/" + id + "/file/" + it.idx, target: "_blank" }, it.name), it.rel !== it.name ? h("div", { class: "small muted" }, it.rel) : null,
+      h("td", { style: "min-width:210px;max-width:280px;overflow-wrap:anywhere" }, it.written && !b.source ? h("b", null, it.name) : h("a", { class: "link", href: "/api/batch/" + id + "/file/" + it.idx, target: "_blank" }, it.name), it.rel !== it.name ? h("div", { class: "small muted" }, it.rel) : null,
         it.pages ? h("div", { class: "small muted" }, it.pages + " стр.") : null),
       h("td", null, it.doc_label ? chip(it.doc_label, "blue") : "—",
         it.summary ? h("div", { class: "small", style: "margin-top:4px" }, it.summary) : null,
@@ -575,7 +575,7 @@ async function BatchView(id) {
             if (!det.hidden && !det.dataset.ok) {
               const r = await api("batch/" + id + "/item/" + it.idx);
               det.dataset.ok = "1";
-              det.firstChild.firstChild.replaceChildren(...r.fields.map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.note && /проверить/.test(f.note) ? h("span", { class: "small", style: "color:#7C4300" }, " (" + f.note + ")") : null, f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
+              det.firstChild.firstChild.replaceChildren(...r.fields.filter((f) => f.name !== "Что это за документ").map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.note && /проверить/.test(f.note) ? h("span", { class: "small", style: "color:#7C4300" }, " (" + f.note + ")") : null, f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
             }
           } }, "Что найдено") : null,
           pickable && !it.skipped ? h("button", { class: "btn btn-s", onclick: () => pickContract(b, it) }, it.chosen != null ? "Другой договор" : "Выбрать договор") : null,
