@@ -73,6 +73,23 @@ check(byname["01_sud_prikaz.pdf"].written and {i.name: i for i in b2.items}["01_
 # подключённая папка: файлы читаются на месте
 from razbor import folders  # noqa: E402
 
+# Безопасность автозаписи: совпадение номера не отменяет проверку качества чтения.
+good = batch.Item(idx=0, rel="test.pdf", name="test.pdf", path="test.pdf",
+                  status="ok", chosen=1, doc_key="order")
+check(folders.can_auto_write(good), "автозапись: уверенно прочитанный документ")
+for reason in ("низкая уверенность распознавания (42%)",
+               "Распознаны не все страницы-сканы: пропущено 2 из 12",
+               "сумма выбрана по максимуму, проверьте",
+               "ФИО взято без метки"):
+    good.reasons = [reason]
+    check(not folders.can_auto_write(good), "автозапись запрещена: " + reason)
+good.reasons = []
+good.doc_key = "unknown"
+check(not folders.can_auto_write(good), "автозапись запрещена: неизвестный вид")
+good.doc_key = "order"
+good.chosen = None
+check(not folders.can_auto_write(good), "автозапись запрещена: нет договора")
+
 fold = os.path.join(tmp, "folder")
 shutil.copytree(os.path.join(ROOT, "tests", "samples"), fold)
 st2 = Store(os.path.join(tmp, "r2.sqlite"))
