@@ -468,6 +468,9 @@ class Handler(BaseHTTPRequestHandler):
                         d=self._jbody()
                         dossiers.link(st,did,d["child"],d["parent"],d["relation"],d["note"])
                         return self._json({"ok":True})
+                    if len(parts)==4 and parts[2]=="payments" and parts[3].isdigit() and method=="POST":
+                        dossiers.allocate_payment(st,did,int(parts[3]),self._jbody().get("principal"))
+                        return self._json({"ok":True})
                     if len(parts)==3 and parts[2]=="payments" and method=="POST":
                         return self._json({"added":dossiers.add_payments(st,did,self._jbody()["rows"])})
                     if len(parts)==3 and parts[2]=="review" and method=="POST":
