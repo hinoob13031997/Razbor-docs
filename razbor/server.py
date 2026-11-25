@@ -452,18 +452,29 @@ class Handler(BaseHTTPRequestHandler):
                     b=ctx.get_batch(d.get("batch",""))
                     if not b or b.state not in ("ready","written"):
                         return self._err(409,"Сначала завершите чтение документов")
-                    did=dossiers.attach(st,b,d.get("indices"),d.get("title",""),d.get("dossier_id"))
+                    did=dossiers.attach(st,b,d.get("indices"),d.get("title",""),d.get("dossier_id"),archive=d.get("archive") is True)
                     return self._json({"id":did})
                 if len(parts)>=2 and parts[1].isdigit():
                     did=int(parts[1])
                     if len(parts)==2 and method=="GET":
                         data=dossiers.detail(st,did)
                         return self._json(data) if data else self._err(404,"Досье не найдено")
+                    if len(parts)==4 and parts[2]=="original" and method=="GET":
+                        original=dossiers.original(st,did,parts[3])
+                        if not original:
+                            return self._err(404,"Оригинал не сохранён")
+                        return self._file(str(original[0]),original[1],download=True)
+                    if len(parts)==3 and parts[2]=="link" and method=="POST":
+                        d=self._jbody()
+                        dossiers.link(st,did,d["child"],d["parent"],d["relation"],d["note"])
+                        return self._json({"ok":True})
+                    if len(parts)==3 and parts[2]=="payments" and method=="POST":
+                        return self._json({"added":dossiers.add_payments(st,did,self._jbody()["rows"])})
                     if len(parts)==3 and parts[2]=="review" and method=="POST":
                         d=self._jbody()
                         dossiers.review(st,did,d.get("sha"),d.get("note",""))
                         return self._json({"ok":True})
-            except (ValueError,TypeError,KeyError) as e:
+            except (ValueError,TypeError,KeyError,OSError) as e:
                 return self._err(400,str(e))
             return self._err(404,"Действие не найдено")
 
