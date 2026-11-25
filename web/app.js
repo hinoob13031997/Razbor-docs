@@ -367,8 +367,7 @@ async function Card(parts) {
   const c = d.contract;
   const tplBtns = [["ip_new", "Заявление об ИП"], ["rtk", "Реестр кредиторов"], ["claim", "Иск"], ["notary", "Запрос нотариусу"]];
   const docBlocks = d.documents.map((x) => {
-    const body = h("div", { hidden: true, class: "fields" },
-      (x.fields || []).map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.note && /проверить/.test(f.note) ? h("span", { class: "small", style: "color:#7C4300" }, " (" + f.note + ")") : null, f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
+    const body = h("div", { hidden:true,class:"reading-host" },readingView(x.fields,x.doc_key));
     return h("div", { style: "border-top:1px solid #EBEEF3;padding:8px 0" },
       h("div", { class: "row sp" },
         h("div", null, h("b", null, x.doc_label || x.name), h("div", { class: "small muted" }, x.name + " · загрузил " + (x.loaded_by || "—") + ", " + fd(x.loaded_at))),
@@ -484,6 +483,34 @@ const GROUPS = [["ok", "Привязаны", "teal"], ["confirm", "Нужно п
 const groupOf = (it) => (it.written ? "written" : it.skipped ? "skip" : it.status === "seen" ? "seen" : it.status === "error" ? "error" : it.chosen != null ? "ok" : it.status === "confirm" ? "confirm" : "nf");
 const bstate = { filter: "ok", limit: 200 };
 
+function isJudgment(key){return ["decision","appeal","cassation"].includes(key)}
+function readingView(fields,key){
+  fields=(fields||[]).filter(f=>f.name!=="Что это за документ");
+  const get=n=>fields.find(f=>f.name===n);
+  const evidence=f=>h("details",{class:"reading-evidence"},h("summary",null,f.page?"Источник · стр. "+f.page:"Источник / примечание"),f.snippet?h("p",null,f.snippet):null,f.note?h("p",{class:"muted"},f.note):null);
+  const datum=(label,f)=>h("div",{class:"reading-datum"},h("span",{class:"reading-label"},label),h("strong",null,f?String(f.value):"Не установлено"),f&&(f.page||f.snippet||f.note)?evidence(f):null);
+  const section=(title,...kids)=>h("section",{class:"reading-section"},h("h2",null,title),kids);
+  const raw=()=>h("details",{class:"reading-section"},h("summary",null,"Все извлечённые поля и источники"),h("div",{class:"reading-grid"},fields.filter(f=>f.name!=="Резолютивная часть").map(f=>datum(f.name,f))));
+  if(!isJudgment(key))return h("div",{class:"reading"},section("Главное",h("div",{class:"reading-grid"},fields.filter(f=>["Дата документа","Номер дела","Номер договора","ФИО","Суд","Взыскатель / кредитор","Сумма основная","Госпошлина","Основание окончания","Номер ИП"].includes(f.name)).map(f=>datum(f.name,f)))),raw());
+  const result=get("Результат рассмотрения"),operative=get("Резолютивная часть");
+  const marks=fields.filter(f=>f.name.startsWith("Признак результата:"));
+  const sums=fields.filter(f=>f.name.startsWith("Сумма в резолютивной части"));
+  const continuing=fields.filter(f=>f.name.startsWith("Начисление до исполнения"));
+  const modern=!!operative;
+  const historical=get("Сумма из текста (не итог взыскания)")||get("Сумма основная");
+  const title= result?String(result.value):marks.some(f=>f.name.endsWith("Взыскание"))&&marks.some(f=>f.name.endsWith("Отказ"))?"Взыскание и отказ — проверить объём":marks.length?marks.map(f=>f.name.replace("Признак результата: ","")).join(" · "):"Результат не установлен";
+  return h("div",{class:"reading"},
+    h("div",{class:"reading-hero"},h("div",null,h("span",{class:"reading-label"},"Результат рассмотрения · предварительно"),h("h2",null,title)),chip("Требуется сверка","amb")),
+    !modern?h("div",{class:"banner amb"},h("div",null,h("b",null,"Нет полного извлечённого фрагмента")," Для старого результата или нераспознанной резолютивной части нужно повторить читку оригинала.")):null,
+    section("1. Реквизиты",h("div",{class:"reading-grid"},[["Дата судебного акта",get("Дата документа")],["Номер дела",get("Номер дела")],["Суд",get("Суд")],["Договор",get("Номер договора")],["Должник",get("ФИО")],["Взыскатель",get("Взыскатель / кредитор")],["Вступление в силу",get("Вступил в силу")]].map(([label,f])=>datum(label,f)))),
+    section("2. Денежные суммы",h("div",{class:"reading-total"},h("span",{class:"reading-label"},"Итого присуждено"),h("strong",null,"Требует подтверждения"),h("p",{class:"muted small"},"Не складываем суммы автоматически: среди них может быть база начисления, отказанная сумма или расходы.")),
+      sums.length?h("div",{class:"scroll"},h("table",{class:"tbl reading-money"},h("thead",null,h("tr",null,["Предполагаемое назначение","Сумма, ₽","Источник"].map(x=>h("th",null,x)))),h("tbody",null,sums.map(f=>{let m=f.name.match(/\(([^)]+)\)$/);return h("tr",null,h("td",null,m?m[1]:"Не определено"),h("td",{class:"reading-amount"},f.value),h("td",null,evidence(f)))})))):h("p",{class:"muted"},"Денежные суммы в резолютивной части не распознаны."),
+      historical?h("details",{class:"reading-historical"},h("summary",null,"Другие суммы из текста (не итог взыскания)"),datum("Упомянутая сумма",historical)):null),
+    section("3. Продолжающиеся начисления",continuing.length?continuing.map(f=>h("div",{class:"reading-clause"},h("p",null,f.value),evidence(f))):h("p",{class:"muted"},"Условия не выделены автоматически. Проверьте резолютивную часть; это не означает, что начислений нет.")),
+    section("4. Что проверить",h("ol",{class:"reading-actions"},["Сверить дату и итог решения с оригиналом.","Разделить взысканные суммы и базу дальнейших процентов; не учитывать отказанные суммы.","При наличии апелляции или кассации собрать судебное досье и установить действующий акт.","Подтвердить условия начисления и платежи перед расчётом."].map(x=>h("li",null,x)))),
+    operative?h("details",{class:"reading-section"},h("summary",null,"Резолютивная часть — извлечённый текст"),h("div",{class:"reading-text"},operative.value),evidence(operative)):null,raw());
+}
+
 async function BatchView(id) {
   const holder = h("div");
   let timer = null;
@@ -555,15 +582,15 @@ async function BatchView(id) {
       tbl);
   }
   function itemRows(b, it) {
-    const det = h("tr", { hidden: true }, h("td", { colspan: 4 }, h("div", { class: "fields" }, "Загружаю…")));
+    const det = h("tr", { hidden: true }, h("td", { colspan: 4 }, h("div", { class: "reading-host" }, "Загружаю…")));
     const pickable = it.status !== "error" && !it.written;
     const ch = it.chosen_info;
     const rowMain = h("tr", null,
       h("td", { style: "min-width:210px;max-width:280px;overflow-wrap:anywhere" }, it.written && !b.source ? h("b", null, it.name) : h("a", { class: "link", href: "/api/batch/" + id + "/file/" + it.idx, target: "_blank" }, it.name), it.rel !== it.name ? h("div", { class: "small muted" }, it.rel) : null,
         it.pages ? h("div", { class: "small muted" }, it.pages + " стр.") : null),
       h("td", null, it.doc_label ? chip(it.doc_label, "blue") : "—",
-        it.summary ? h("div", { class: "small", style: "margin-top:4px" }, it.summary) : null,
-        nameBox(it),
+        isJudgment(it.doc_key) ? h("p",{class:"small muted"},"Суммы и результат — в разборе решения.") : it.summary ? h("div", { class: "small", style: "margin-top:4px" }, it.summary) : null,
+        it.name_check?.verdict && it.name_check.verdict!=="ok" ? h("details",{class:"name-compact"},h("summary",null,"Сверка названия · "+it.name_check.title),nameBox(it)) : nameBox(it),
         it.reasons.filter((x) => !(it.name_check && it.name_check.verdict && x.indexOf(it.name_check.title) === 0)).length
           ? h("div", { class: "small", style: "color:#7C4300;margin-top:4px" }, "Проверить: " + it.reasons.filter((x) => !(it.name_check && it.name_check.verdict && x.indexOf(it.name_check.title) === 0)).join("; ")) : null),
       h("td", null,
@@ -580,9 +607,9 @@ async function BatchView(id) {
             if (!det.hidden && !det.dataset.ok) {
               const r = await api("batch/" + id + "/item/" + it.idx);
               det.dataset.ok = "1";
-              det.firstChild.firstChild.replaceChildren(...r.fields.filter((f) => f.name !== "Что это за документ").map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.note && /проверить/.test(f.note) ? h("span", { class: "small", style: "color:#7C4300" }, " (" + f.note + ")") : null, f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
+              det.firstChild.firstChild.replaceChildren(readingView(r.fields,it.doc_key));
             }
-          } }, "Что найдено") : null,
+          } }, "Разбор документа") : null,
 
           pickable && !it.skipped ? h("button", { class: "btn btn-s", onclick: () => pickContract(b, it) }, it.chosen != null ? "Другой договор" : "Выбрать договор") : null,
           !it.written && it.status !== "seen" ? h("button", { class: "btn btn-s", onclick: async () => { await api("batch/" + id + "/skip", { idx: it.idx, skip: !it.skipped }); load(); } }, it.skipped ? "Вернуть" : "Пропустить") : null)));
@@ -772,11 +799,10 @@ async function Dossiers(parts) {
   note.value=d.review_note||"";
   const msg=h("div");
   const blocks=d.documents.map(x=>{
-    const fields=h("div",{class:"fields",hidden:true},x.fields.map(f=>h("div",null,h("span",{class:"k"},f.name+(f.page?" · стр. "+f.page:"")),h("span",null,f.value),f.snippet?h("span",{class:"snip"},f.snippet):null)));
-    const findings=x.fields.filter(f=>f.name.startsWith("Признак результата:")||f.name.startsWith("Сумма в резолютивной части")||f.name==="Начисление до исполнения");
+    const fields=h("div",{class:"reading-host",hidden:true},readingView(x.fields,x.doc_key));
     return h("div",{class:"card mb"},h("div",{class:"row sp"},h("div",null,h("b",null,fd(x.date)+" · "+x.doc_label),h("p",{class:"small muted"},x.name+" · дело "+(x.case||"не установлено")+" · "+(x.court||"суд не установлен"))),
       h("div",{class:"row"},x.has_original?h("a",{class:"btn btn-s",href:"/api/dossiers/"+d.id+"/original/"+x.sha},"Скачать оригинал"):null,h("a",{class:"btn btn-s",href:"#/batch/"+x.batch},"К загрузке"),h("button",{class:"btn btn-s",onclick:()=>fields.hidden=!fields.hidden},"Реквизиты и цитаты"))),
-      findings.map(f=>h("p",{class:"small"},f.name+" · "+f.value+" (стр. "+(f.page||"—")+")"+(f.note?" — "+f.note:""))),
+      x.fields.find(f=>f.name==="Результат рассмотрения")?h("p",null,x.fields.find(f=>f.name==="Результат рассмотрения").value):null,
       x.reasons.length?h("p",{class:"small err"},x.reasons.join("; ")):null,fields);
   });
   return h("div",null,h("a",{class:"link",href:"#/dossiers"},"← Все досье"),
