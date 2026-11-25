@@ -53,6 +53,7 @@ class Item:
     inplace: bool = False      # файл лежит в подключённой папке: не копируем и не удаляем
     summary: str = ""           # что это за документ, простыми словами
     name_check: dict = field(default_factory=dict)   # сверка названия файла с содержимым
+    ai_analysis: dict = field(default_factory=dict)  # локальные выводы, не подтверждённые юристом
 
 
 @dataclass
