@@ -43,7 +43,7 @@ class AITest(unittest.TestCase):
         ]
         with patch.object(local_ai,"installed_models",return_value=["qwen3:8b"]), \
              patch.object(local_ai,"_request",return_value={"message":{"content":json.dumps({"findings":findings})}}):
-            r = local_ai.analyze_chunk({1:quote})
+            r = local_ai.analyze_chunk({1:quote}, model="qwen3:8b")
         self.assertEqual(len(r["findings"]),1)
         self.assertEqual(r["rejected"],2)
         self.assertTrue(r["requires_review"])
