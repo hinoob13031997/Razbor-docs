@@ -93,10 +93,11 @@ def analyze(rr: ReadResult, custom: list[CustomField] | None = None) -> Analysis
     a.title = C.title_detail(doc.head)
     a.fields = F.extract(doc, cl.key, cl.group)
     if cl.group in (C.G_COURT, C.G_BANKR):
-        from .court_review import extract_review, correct_decision_header
+        from .court_review import extract_review, correct_decision_header, additional_dates
         a.fields.update(extract_review(doc))
         if cl.key in ("decision", "appeal", "cassation"):
             correct_decision_header(doc, a.fields)
+            additional_dates(doc, a.fields)
             # Исторические суммы из мотивировки не являются присуждённым долгом.
             old = a.fields.pop("Сумма основная", None)
             if old is not None:
