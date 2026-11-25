@@ -92,6 +92,9 @@ def analyze(rr: ReadResult, custom: list[CustomField] | None = None) -> Analysis
     a.doc_key, a.doc_label, a.group, a.score = cl.key, cl.label, cl.group, cl.score
     a.title = C.title_detail(doc.head)
     a.fields = F.extract(doc, cl.key, cl.group)
+    if cl.group in (C.G_COURT, C.G_BANKR):
+        from .court_review import extract_review
+        a.fields.update(extract_review(doc))
     for name, hit in a.fields.items():
         a.pages[name] = doc.page_of(hit.pos)
         a.snippets[name] = doc.snippet(hit.pos, hit.end)
