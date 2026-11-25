@@ -783,7 +783,7 @@ async function Dossiers(parts) {
       h("label",null,"Акт, выбранный сотрудником после проверки",select),h("label",null,"Комментарий и основания",note),
       h("button",{class:"btn btn-p mt",onclick:async()=>{try{await api("dossiers/"+d.id+"/review",{sha:select.value,note:note.value});msg.replaceChildren(h("p",null,"Сохранено"));}catch(e){msg.replaceChildren(errBox(e.message))}}},"Сохранить заключение"),msg),
     dossierLinks(d),dossierPayments(d),
-    h("div",{class:"card mb"},h("h2",null,"История расчётов"),(d.calculations||[]).length?(d.calculations||[]).map(x=>h("div",{style:"padding:8px 0;border-top:1px solid #EBEEF3"},h("b",null,fd(x.created)+" · "+money(x.result.interest)),h("div",{class:"small muted"},fd(x.inputs.start)+" — "+fd(x.inputs.end)+" · база "+money(x.inputs.principal)),h("div",{class:"small muted"},x.source_sha&&x.source_sha===d.reviewed_doc?"Привязан к выбранному акту; условия проверить":"Требуется сверка с действующим актом"))):h("p",{class:"muted"},"Расчётов пока нет.")),
+    h("div",{class:"card mb"},h("h2",null,"История расчётов"),(d.calculations||[]).length?(d.calculations||[]).map(x=>h("div",{style:"padding:8px 0;border-top:1px solid #EBEEF3"},h("b",null,fd(x.created)+" · "+money(x.result.interest)),h("div",{class:"small muted"},fd(x.inputs.start)+" — "+fd(x.inputs.end)+" · база "+money(x.inputs.principal)),h("div",{class:"small muted"},x.source_sha&&x.source_sha===d.reviewed_doc?"Привязан к выбранному акту; платежи и условия проверить":"Требуется сверка с действующим актом"))):h("p",{class:"muted"},"Расчётов пока нет.")),
     h("h2",null,"Хронология"),blocks);
 }
 const RELATIONS={upheld:"Оставляет без изменения",changed:"Изменяет",cancelled:"Отменяет",remanded:"Отменяет и направляет на новое рассмотрение",enforcement:"Исполнение",related:"Связан с актом"};
@@ -808,7 +808,12 @@ function dossierPayments(d){
       const rows=input.value.split(/\r?\n/).filter(x=>x.trim()).map(x=>{const a=x.split(";").map(y=>y.trim());if(a.length!==4)throw new Error("Нужно четыре столбца");return {date:a[0],total:a[1],principal:a[2],reference:a[3]}});
       await api("dossiers/"+d.id+"/payments",{rows});route();
     }catch(e){msg.replaceChildren(errBox(e.message))}finally{e.target.disabled=false}}},"Добавить платежи"),msg,
-    (d.payments||[]).length?h("div",{class:"scroll"},h("table",{class:"tbl"},h("thead",null,h("tr",null,["Дата","Всего","В базу","Номер"].map(x=>h("th",null,x)))),h("tbody",null,d.payments.map(x=>h("tr",null,h("td",null,fd(x.day)),h("td",null,money(x.total)),h("td",null,x.principal===null?"Не распределён":money(x.principal)),h("td",null,x.reference)))))):null);
+    (d.payments||[]).length?h("div",{class:"scroll"},h("table",{class:"tbl"},h("thead",null,h("tr",null,["Дата","Всего","В базу","Номер"].map(x=>h("th",null,x)))),h("tbody",null,d.payments.map(x=>h("tr",null,h("td",null,fd(x.day)),h("td",null,money(x.total)),h("td",null,x.principal===null?"Не распределён":money(x.principal)," ",h("button",{class:"btn btn-s",onclick:()=>{
+      const v=h("input",{class:"fld",value:x.principal??"",placeholder:"Пусто — не распределён"}),status=h("div");
+      openModal([h("h2",null,"Распределение платежа "+x.reference),h("p",null,"Всего: "+money(x.total)),v,h("button",{class:"btn btn-p mt",onclick:async()=>{
+        try{await api("dossiers/"+d.id+"/payments/"+x.id,{principal:v.value.trim()});closeModal();route()}catch(e){status.replaceChildren(errBox(e.message))}
+      }},"Сохранить"),status]);
+    }},"Уточнить")),h("td",null,x.reference)))))):null);
 }
 async function Interest(parts,params) {
   const did=Number(params.get("dossier"))||null;
