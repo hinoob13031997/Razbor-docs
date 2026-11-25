@@ -3,8 +3,7 @@
 Ни один найденный признак не подтверждает юридическую силу акта автоматически.
 """
 import re
-from .fields import Hit, CASE_LABELED, CASE_HASH
-from .textutil import find_dates
+from .fields import Hit, CASE_LABELED, CASE_HASH, find_amounts
 
 OPERATIVE = re.compile(r"(?im)^[ \t]*(?:суд(?:ебная коллегия)?\s+)?(?:решил[аи]?|определил[аи]?|постановил[аи]?)\s*[:.]?[ \t]*$")
 CONTINUING = re.compile(r"(?i)(?:по|до)\s+(?:день|дату|момент|даты|дня|момента)?\s*фактическ\w+\s+(?:исполнени\w+|погашени\w+|возврат\w+)|до\s+полного\s+погашения")
@@ -35,6 +34,11 @@ def extract_review(doc):
         if m:
             out["Признак результата: " + label] = Hit(m.group(0), pos+m.start(), pos+m.end(),
                                                       "предварительно, сверить резолютивную часть")
+    categories={"main":"долг / взыскание","credit":"кредит / заём","interest":"проценты",
+                "fee":"госпошлина","penalty":"неустойка / штраф","ipfee":"исполнительский сбор","other":"вид не установлен"}
+    for n,a in enumerate(find_amounts(tail)[:30],1):
+        out[f"Сумма в резолютивной части {n} ({categories.get(a.cat,'не определено')})"] = Hit(
+            a.value,pos+a.pos,pos+a.end,"категория предварительная, сумма может относиться к отказу, изменению или отмене")
     # Полная фраза о продолжающемся начислении — без догадки о базе и ставке.
     for m in CONTINUING.finditer(tail):
         lo, hi = max(0,m.start()-350), min(len(tail),m.end()+160)
