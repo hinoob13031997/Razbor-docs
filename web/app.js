@@ -893,11 +893,11 @@ async function Interest(parts,params) {
   const [le,end]=field("Конец (включительно)",{type:"date"});
   const [lr,rate]=field("Ставка годовых, %",{type:"number",min:0,step:"any"});
   const [lv,verified]=field("Ставки проверены по дату",{type:"date"});
-  const mode=h("select",{class:"fld"},h("option",{value:"fixed"},"Фиксированная ставка"),h("option",{value:"variable"},"Переменная ставка"));
+  const mode=h("select",{class:"fld"},h("option",{value:"fixed"},"Фиксированная годовая ставка"),h("option",{value:"daily"},"Фиксированная дневная ставка (неустойка)"),h("option",{value:"variable"},"Переменная годовая ставка"));
   const rates=h("textarea",{class:"fld",rows:4,placeholder:"2024-01-01;16"});
   const payments=h("textarea",{class:"fld",rows:4,placeholder:"2025-02-01;10000"});
   const variable=h("div",{hidden:true},lv,h("p",{class:"small muted"},"История ставок: дата начала действия; процент, одна строка на ставку."),rates,h("button",{class:"btn mt",onclick:async()=>{try{const b=await api("rates");if(!b.rows.length)throw new Error("Сначала заполните справочник");rates.value=b.rows.map(x=>x.date+";"+x.rate).join("\n");verified.value=b.verified;result.replaceChildren(h("p",null,"Источник: "+b.source+". Проверьте полноту истории ставок."))}catch(e){result.replaceChildren(errBox(e.message))}}},"Загрузить локальный справочник"));
-  mode.addEventListener("change",()=>{variable.hidden=mode.value!=="variable";lr.hidden=mode.value==="variable"});
+  mode.addEventListener("change",()=>{variable.hidden=mode.value!=="variable";lr.hidden=mode.value==="variable";lr.firstChild.textContent=mode.value==="daily"?"Ставка за день, %":"Ставка годовых, %"});
   const result=h("div",{class:"mt"});
   const importPayments=dossier?h("button",{class:"btn mt",onclick:()=>{
     if(!start.value||!end.value){result.replaceChildren(errBox("Сначала укажите период расчёта"));return}
@@ -915,17 +915,17 @@ async function Interest(parts,params) {
     e.target.disabled=true;
     result.replaceChildren();
     try{
-      if(!p.value||!start.value||!end.value|| (mode.value==="fixed"&&!rate.value)) throw new Error("Заполните обязательные поля");
+      if(!p.value||!start.value||!end.value|| (mode.value!=="variable"&&!rate.value)) throw new Error("Заполните обязательные поля");
       const r=await api("interest",{principal:p.value,start:start.value,end:end.value,mode:mode.value,rate:rate.value,
         verified_through:verified.value,rates:mode.value==="variable"?parse(rates.value,"rate"):[],payments:parse(payments.value,"amount"),dossier_id:did});
       result.replaceChildren(h("h2",null,"Начислено: "+money(r.interest)),h("p",null,"Остаток базы: "+money(r.remaining_principal)),
         h("div",{class:"scroll"},h("table",{class:"tbl"},
-          h("thead",null,h("tr",null,["Начало","Конец","Дней","База","Ставка %","Дней в году","Проценты"].map(x=>h("th",null,x)))),
+          h("thead",null,h("tr",null,["Начало","Конец","Дней","База",r.rate_unit==="day"?"Ставка %/день":"Ставка %/год","Делитель","Начислено"].map(x=>h("th",null,x)))),
           h("tbody",null,r.segments.map(x=>h("tr",null,[fd(x.start),fd(x.end),x.days,money(x.base),x.rate,x.denominator,money(x.interest)].map(y=>h("td",null,y))))))),
         h("p",{class:"small muted"},r.rounding),r.saved_id?h("p",null,"Расчёт сохранён в досье"):null);
     }catch(e){result.replaceChildren(errBox(e.message))}finally{e.target.disabled=false}
   }},did?"Рассчитать и сохранить":"Рассчитать");
-  return h("div",null,dossier?h("a",{class:"link",href:"#/dossiers/"+did},"← "+dossier.title):null,header("Калькулятор процентов","Простые годовые проценты; условия судебного акта необходимо подтвердить."),
+  return h("div",null,dossier?h("a",{class:"link",href:"#/dossiers/"+did},"← "+dossier.title):null,header("Калькулятор процентов","Годовые и дневные ставки; каждое начисление и его базу рассчитывайте отдельно."),
     h("div",{class:"card"},h("div",{class:"grid g2"},lp,ls,le,mode,lr),variable,
       h("p",{class:"small muted"},"Погашения именно базы начисления (не общая сумма платежа): дата; сумма. База уменьшается со следующего дня. Не учитываются особые ограничения, моратории, капитализация и другие исключения."),
       payments,importPayments,h("div",{class:"mt"},calculate),result));
