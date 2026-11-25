@@ -124,6 +124,7 @@ const NAV = [
   ["#/deadlines", "Сроки", "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "urgent"],
   ["#/ip", "Исполнительные производства", "M5 4h10l4 4v12H5zM14 4v5h5"],
   ["#/templates", "Шаблоны документов", "M6 3h9l4 4v14H6zM9 12h7M9 16h7"],
+  ["#/dossiers", "Судебные досье", "M4 7h6l2 2h8v11H4zM4 4h12"],
   ["#/interest", "Калькулятор процентов", "M5 3h14v18H5zM8 7h8M8 11h2m4 0h2M8 15h2m4 0h2"],
   ["#/settings", "Настройки", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM4 12h2m12 0h2M12 4v2m0 12v2"],
 ];
@@ -164,7 +165,7 @@ async function route() {
   try {
     const sum = await api("summary");
     renderNav(path === "#/" || path === "#" ? "#/" : path, { urgent: sum.urgent });
-    const screens = { "": Dash, portfolio: Portfolio, batch: Batch, card: Card, deadlines: Deadlines, ip: Ip, templates: Templates, tpl: Tpl, settings: Settings, folders: Folders, interest: Interest };
+    const screens = { "": Dash, portfolio: Portfolio, batch: Batch, card: Card, deadlines: Deadlines, ip: Ip, templates: Templates, tpl: Tpl, settings: Settings, folders: Folders, interest: Interest, dossiers: Dossiers };
     const fn = screens[parts[0] || ""] || Dash;
     const node = await fn(parts.slice(1), params, sum);
     if (tok === navToken) view.replaceChildren(node);
@@ -519,7 +520,7 @@ async function BatchView(id) {
       h("div", { class: "sticky" },
         h("span", null, b.state === "written" ? "Всё записано." : "К записи: " + toWrite + " " + plural(toWrite, "документ", "документа", "документов") + " в " + contracts + " " + plural(contracts, "договор", "договора", "договоров")),
         h("div", { class: "row" },
-          h("button", {class:"btn", disabled:b.state==="reading", onclick:()=>aiGroupDialog(b)}, "ИИ: несколько документов"),
+          h("button", {class:"btn", disabled:b.state==="reading", onclick:()=>dossierDialog(b)}, "Собрать судебное досье"),
           h("a", { class: "btn", href: "#/batch" }, "Загрузить ещё"),
           h("button", { class: "btn btn-p", disabled: !toWrite, onclick: async (e) => {
             e.target.disabled = true;
@@ -580,7 +581,7 @@ async function BatchView(id) {
               det.firstChild.firstChild.replaceChildren(...r.fields.filter((f) => f.name !== "Что это за документ").map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.note && /проверить/.test(f.note) ? h("span", { class: "small", style: "color:#7C4300" }, " (" + f.note + ")") : null, f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
             }
           } }, "Что найдено") : null,
-          h("button", { class: "btn btn-s", onclick: () => aiDialog(id, it.idx, it.name, !it.written || !!b.source) }, "ИИ-анализ"),
+
           pickable && !it.skipped ? h("button", { class: "btn btn-s", onclick: () => pickContract(b, it) }, it.chosen != null ? "Другой договор" : "Выбрать договор") : null,
           !it.written && it.status !== "seen" ? h("button", { class: "btn btn-s", onclick: async () => { await api("batch/" + id + "/skip", { idx: it.idx, skip: !it.skipped }); load(); } }, it.skipped ? "Вернуть" : "Пропустить") : null)));
     return [rowMain, det];
@@ -732,85 +733,55 @@ async function Tpl(parts) {
 }
 
 // ------------------------------------------------------------------ Настройки
-const AI_LABELS = {court:"Суд",case_number:"Номер дела",act_date:"Дата акта",act_type:"Вид акта",
-  prior_act_reference:"Связанный судебный акт",disposition:"Резолютивная часть",claim:"Требования",
-  party_argument:"Доводы стороны",court_finding:"Вывод суда",award:"Присуждённое",
-  interest_rule:"Условия процентов",effective_date:"Вступление в силу",payment:"Платёж",ambiguity:"Неясность"};
-async function aiDialog(id, idx, name, canRead) {
-  const panel = h("div", null, "Проверяю доступность локальной модели…");
-  openModal([h("h2", null, name), panel, h("button", {class:"btn mt", onclick:closeModal}, "Закрыть")]);
-  async function draw() {
-    const data = await api("batch/"+id+"/item/"+idx);
-    const r = data.ai_analysis || {};
-    const status = await api("ai-status");
-    const models = status.models.filter(x=>["qwen3:4b","qwen3:8b"].includes(x));
-    const select = h("select",{class:"fld"}, models.map(x=>h("option",{value:x},x)));
-    panel.replaceChildren(
-      h("p",{class:"small muted"},"ИИ предлагает выводы, но не изменяет карточки и не заменяет юридическую проверку. Перед запуском отключите облачные функции Ollama и его внешнюю сеть."),
-      models.length ? h("div",{class:"row"},select,h("button",{class:"btn btn-p",disabled:!canRead,onclick:async(e)=>{
-        e.target.disabled=true;
-        try{
-          const j=await api("batch/"+id+"/ai",{idx,model:select.value});
-          panel.replaceChildren(h("p",null,"Выполняется локальный анализ. Прогресс и остановка — в верхней части экрана."));
-          const result=await watchJob(j.id);
-          if(result.state==="error" || result.result?.errors?.length) panel.replaceChildren(errBox(result.error || result.result.errors.map(x=>x.error).join("; ")),h("button",{class:"btn",onclick:draw},"Назад"));
-          else await draw();
-        }catch(e){panel.replaceChildren(errBox(e.message),h("button",{class:"btn",onclick:draw},"Назад"))}
-      }},"Запустить анализ")):h("p",null,"Не найдена локальная модель. Установите Ollama и выполните ollama pull qwen3:4b."),
-      !canRead?h("p",{class:"small muted"},"Исходная загруженная копия после записи в карточку может быть удалена. Сохранённый анализ доступен ниже."):null,
-      r.model?h("div",{class:"mt"},h("b",null,"Сохранённый анализ · "+r.model),
-        h("p",{class:"small muted"},"Страниц: "+r.pages_read+" из "+r.pages+". Отклонено цитат: "+r.rejected+"."),
-        (r.warnings||[]).map(w=>h("p",{class:"err small"},w)),
-        (r.findings||[]).length?(r.findings||[]).map(f=>h("div",{class:"card mb"},
-          h("b",null,(AI_LABELS[f.kind]||f.kind)+" · стр. "+f.page),h("p",null,f.value),
-          h("blockquote",{class:"small muted"},f.quote))):h("p",null,"Подтверждаемые цитатами сведения не найдены.")):null);
-  }
-  try {await draw()} catch(e){panel.replaceChildren(errBox(e.message))}
-}
-async function aiGroupDialog(b) {
+async function dossierDialog(b) {
   const panel=h("div",null,"Загружаю…");
-  openModal([h("h2",null,"Анализ нескольких судебных актов"),panel,h("button",{class:"btn mt",onclick:closeModal},"Закрыть")]);
-  const chosen=new Set();
-  async function draw(errors=[]) {
-    const status=await api("ai-status");
-    const models=status.models.filter(x=>["qwen3:4b","qwen3:8b"].includes(x));
-    const model=h("select",{class:"fld"},models.map(x=>h("option",{value:x},x)));
-    const items=b.items.filter(x=>x.status!=="error" && (!x.written||b.source));
-    const rows=h("div",{style:"max-height:300px;overflow:auto"},
-      items.map(x=>h("label",{class:"row",style:"padding:5px 0"},h("input",{type:"checkbox",checked:chosen.has(x.idx),onchange:e=>{
-        if(e.target.checked) chosen.add(x.idx); else chosen.delete(x.idx);
-      }}),h("span",null,x.name))));
-    const output=h("div",{class:"mt"});
-    const show=async()=>{
-      output.replaceChildren(h("p",null,"Загружаю сохранённые выводы…"));
-      try {
-        const data=await Promise.all([...chosen].map(idx=>api("batch/"+b.id+"/item/"+idx)));
-        output.replaceChildren(h("h2",null,"Сведения по выбранным актам"),
-          h("p",{class:"small muted"},"Сопоставьте даты, номера дел и ссылки на предыдущие акты. Суммы не складываются; действующий судебный акт и принадлежность одному должнику необходимо подтвердить."),
-          data.map(d=>h("div",{class:"card mb"},h("b",null,d.name),
-            d.ai_analysis?.model?[
-              (d.ai_analysis.warnings||[]).map(w=>h("p",{class:"small err"},w)),
-              (d.ai_analysis.findings||[]).map(f=>h("div",{style:"padding:5px 0"},h("b",null,(AI_LABELS[f.kind]||f.kind)+" · стр. "+f.page),h("p",null,f.value),h("span",{class:"small muted"},f.quote)))
-            ]:h("p",{class:"small muted"},"Анализ пока не сохранён."))));
-      }catch(e){output.replaceChildren(errBox(e.message))}
-    };
-    panel.replaceChildren(h("p",{class:"small muted"},"Выберите документы, относящиеся к одному должнику или делу. Максимум 100 за запуск. Модель обрабатывает их последовательно; выводы сохраняются в пачке и не меняют карточки."),
-      errors.map(e=>errBox(e.name+": "+e.error)),rows,
-      h("div",{class:"row mt"},model,h("button",{class:"btn btn-p",disabled:!models.length,onclick:async(e)=>{
-        if(!chosen.size||chosen.size>100){output.replaceChildren(errBox("Выберите от 1 до 100 документов"));return;}
+  openModal([h("h2",null,"Собрать судебное досье"),panel,h("button",{class:"btn mt",onclick:closeModal},"Закрыть")]);
+  try {
+    const list=await api("dossiers");
+    const select=h("select",{class:"fld"},h("option",{value:""},"Новое досье"),list.map(x=>h("option",{value:x.id},x.title+" · "+x.count+" док.")));
+    const title=h("input",{class:"fld",placeholder:"ФИО / наименование должника или название дела"});
+    select.addEventListener("change",()=>{title.hidden=!!select.value});
+    const chosen=new Set();
+    const items=b.items.filter(x=>x.status!=="error" && x.nfields);
+    const err=h("div");
+    panel.replaceChildren(h("p",{class:"small muted"},"Выберите только документы одного должника. Досье можно создать без загруженного портфеля CRM. Сохраняются найденные сведения, а не копии оригиналов."),select,title,
+      h("div",{style:"max-height:350px;overflow:auto"},items.map(x=>h("label",{class:"row",style:"padding:6px 0"},h("input",{type:"checkbox",onchange:e=>e.target.checked?chosen.add(x.idx):chosen.delete(x.idx)}),h("span",null,x.name+" · "+x.doc_label)))),
+      h("button",{class:"btn btn-p mt",onclick:async(e)=>{
         e.target.disabled=true;
         try {
-          const j=await api("batch/"+b.id+"/ai",{indices:[...chosen],model:model.value});
-          output.replaceChildren(h("p",null,"Анализ выполняется последовательно. Прогресс — в верхней части экрана."));
-          const r=await watchJob(j.id);
-          await draw(r.result?.errors|| (r.error?[{name:"Анализ",error:r.error}]:[]));
-        }catch(e){output.replaceChildren(errBox(e.message));}
+          const r=await api("dossiers/attach",{batch:b.id,indices:[...chosen],title:title.value,dossier_id:select.value?Number(select.value):null});
+          closeModal();location.hash="#/dossiers/"+r.id;
+        }catch(e){err.replaceChildren(errBox(e.message))}
         finally{e.target.disabled=false}
-      }},"Анализировать"),h("button",{class:"btn",onclick:show},"Показать выводы")),output);
-    if(!models.length)panel.prepend(h("p",null,"Локальная модель не установлена или Ollama не запущен."));
-    if(chosen.size)await show();
+      }},"Сохранить досье"),err);
+  }catch(e){panel.replaceChildren(errBox(e.message))}
+}
+async function Dossiers(parts) {
+  if(!parts.length){
+    const rows=await api("dossiers");
+    return h("div",null,header("Судебные досье","Независимый от CRM архив результатов читки по должникам и судебным делам.",h("a",{class:"btn btn-p",href:"#/batch"},"Загрузить документы")),
+      h("div",{class:"card"},rows.length?rows.map(x=>h("a",{class:"cand",href:"#/dossiers/"+x.id},h("b",null,x.title),h("span",null,x.count+" документов"))):h("p",{class:"muted"},"Загрузите документы и нажмите «Собрать судебное досье».")));
   }
-  try{await draw()}catch(e){panel.replaceChildren(errBox(e.message))}
+  const d=await api("dossiers/"+parts[0]);
+  const select=h("select",{class:"fld"},h("option",{value:""},"Не установлено"),d.documents.map(x=>h("option",{value:x.sha},fd(x.date)+" · "+x.doc_label+" · "+x.name)));
+  select.value=d.reviewed_doc||"";
+  const note=h("textarea",{class:"fld",rows:4,placeholder:"Основание: что изменено, отменено или оставлено в силе"});
+  note.value=d.review_note||"";
+  const msg=h("div");
+  const blocks=d.documents.map(x=>{
+    const fields=h("div",{class:"fields",hidden:true},x.fields.map(f=>h("div",null,h("span",{class:"k"},f.name+(f.page?" · стр. "+f.page:"")),h("span",null,f.value),f.snippet?h("span",{class:"snip"},f.snippet):null)));
+    const findings=x.fields.filter(f=>f.name.startsWith("Признак результата:")||f.name==="Начисление до исполнения");
+    return h("div",{class:"card mb"},h("div",{class:"row sp"},h("div",null,h("b",null,fd(x.date)+" · "+x.doc_label),h("p",{class:"small muted"},x.name+" · дело "+(x.case||"не установлено")+" · "+(x.court||"суд не установлен"))),
+      h("button",{class:"btn btn-s",onclick:()=>fields.hidden=!fields.hidden},"Реквизиты и цитаты")),
+      findings.map(f=>h("p",{class:"small"},f.name+" · "+f.value+" (стр. "+(f.page||"—")+")")),
+      x.reasons.length?h("p",{class:"small err"},x.reasons.join("; ")):null,fields);
+  });
+  return h("div",null,h("a",{class:"link",href:"#/dossiers"},"← Все досье"),
+    header(d.title,d.documents.length+" документов",h("a",{class:"btn",href:"#/batch"},"Добавить документы"),h("a",{class:"btn",href:"#/interest"},"Калькулятор")),
+    h("div",{class:"card mb"},h("h2",null,"Проверка судебных актов"),d.warnings.map(w=>h("p",{class:"small muted"},w)),
+      h("label",null,"Акт, выбранный сотрудником после проверки",select),h("label",null,"Комментарий и основания",note),
+      h("button",{class:"btn btn-p mt",onclick:async()=>{try{await api("dossiers/"+d.id+"/review",{sha:select.value,note:note.value});msg.replaceChildren(h("p",null,"Сохранено"));}catch(e){msg.replaceChildren(errBox(e.message))}}},"Сохранить заключение"),msg),
+    h("h2",null,"Хронология"),blocks);
 }
 async function Interest() {
   const field=(label,attrs={})=>{const i=h("input",{class:"fld",...attrs});return [h("label",null,h("div",{class:"small muted"},label),i),i]};
