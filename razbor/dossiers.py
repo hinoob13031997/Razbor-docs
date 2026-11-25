@@ -227,3 +227,14 @@ def add_payments(store,did,rows):
             c.execute("INSERT INTO court_payments(dossier_id,day,total,principal,reference) VALUES(?,?,?,?,?)",row)
             added+=1
     return added
+
+def allocate_payment(store,did,pid,principal):
+    """Подтверждение распределения; старые расчёты остаются историческими."""
+    with store.write() as c:
+        row=c.execute("SELECT total FROM court_payments WHERE dossier_id=? AND id=?",(did,pid)).fetchone()
+        if not row:
+            raise ValueError("Платёж не найден")
+        v=None if principal in (None,"") else _money(principal)
+        if v is not None and v>Decimal(row[0]):
+            raise ValueError("Погашение базы превышает платёж")
+        c.execute("UPDATE court_payments SET principal=? WHERE dossier_id=? AND id=?",(None if v is None else str(v),did,pid))
