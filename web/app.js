@@ -770,10 +770,10 @@ async function Dossiers(parts) {
   const msg=h("div");
   const blocks=d.documents.map(x=>{
     const fields=h("div",{class:"fields",hidden:true},x.fields.map(f=>h("div",null,h("span",{class:"k"},f.name+(f.page?" · стр. "+f.page:"")),h("span",null,f.value),f.snippet?h("span",{class:"snip"},f.snippet):null)));
-    const findings=x.fields.filter(f=>f.name.startsWith("Признак результата:")||f.name==="Начисление до исполнения");
+    const findings=x.fields.filter(f=>f.name.startsWith("Признак результата:")||f.name.startsWith("Сумма в резолютивной части")||f.name==="Начисление до исполнения");
     return h("div",{class:"card mb"},h("div",{class:"row sp"},h("div",null,h("b",null,fd(x.date)+" · "+x.doc_label),h("p",{class:"small muted"},x.name+" · дело "+(x.case||"не установлено")+" · "+(x.court||"суд не установлен"))),
-      h("button",{class:"btn btn-s",onclick:()=>fields.hidden=!fields.hidden},"Реквизиты и цитаты")),
-      findings.map(f=>h("p",{class:"small"},f.name+" · "+f.value+" (стр. "+(f.page||"—")+")")),
+      h("div",{class:"row"},h("a",{class:"btn btn-s",href:"#/batch/"+x.batch},"К загрузке"),h("button",{class:"btn btn-s",onclick:()=>fields.hidden=!fields.hidden},"Реквизиты и цитаты"))),
+      findings.map(f=>h("p",{class:"small"},f.name+" · "+f.value+" (стр. "+(f.page||"—")+")"+(f.note?" — "+f.note:""))),
       x.reasons.length?h("p",{class:"small err"},x.reasons.join("; ")):null,fields);
   });
   return h("div",null,h("a",{class:"link",href:"#/dossiers"},"← Все досье"),
