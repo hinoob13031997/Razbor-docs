@@ -57,7 +57,7 @@ def analyze_chunk(pages, model="qwen3:4b"):
               "с одной страницы. Не рассчитывай суммы. При неясности укажи ambiguity. "
               "Верни JSON по схеме.")
     result = _request("POST", "/api/chat", {"model": model, "stream": False,
-        "think": False, "keep_alive": 0, "format": SCHEMA, "options": {"temperature": 0, "num_ctx": 8192, "num_thread": 6, "num_predict": 2048},
+        "think": False, "keep_alive": "60s", "format": SCHEMA, "options": {"temperature": 0, "num_ctx": 8192, "num_thread": 6, "num_predict": 2048},
         "messages": [{"role": "system", "content": prompt},
                      {"role": "user", "content": json.dumps(pages, ensure_ascii=False)}]})
     parsed = json.loads(result["message"]["content"])
