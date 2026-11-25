@@ -33,8 +33,11 @@ jobs:
             Invoke-WebRequest "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$l.traineddata" -OutFile "tessdata_dl/$l.traineddata"
           }
 
-      - name: Проверка калькулятора и адаптера ИИ (без сети)
-        run: python tests/test_interest_ai.py
+      - name: Проверка судебных досье (без сети)
+        run: python tests/test_dossiers.py
+
+      - name: Проверка калькулятора (без сети)
+        run: python tests/test_interest_ai.py InterestTest
 
       - name: Проверка чтения полей (готовый текст, без распознавания)
         run: python tests/test_fields.py
