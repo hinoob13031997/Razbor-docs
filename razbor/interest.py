@@ -19,12 +19,14 @@ def _dec(value):
     return d
 
 def calculate(principal, start: date, end: date, *, fixed_rate=None,
-              rates=None, verified_through=None, principal_payments=()):
+              rates=None, verified_through=None, principal_payments=(), daily_rate=False):
     """Ставки — проценты годовых; rates — пары (дата действия, ставка).
     При переменных ставках verified_through задаёт проверенную дату покрытия.
     Платежи — пары (дата, сумма в погашение базы), не общий платёж.
-    Не учитывает капитализацию, неустойки, моратории и иные исключения.
+    При daily_rate=True фиксированная ставка задаётся за день. Не учитывает капитализацию, ограничения неустоек, моратории и иные исключения.
     """
+    if daily_rate and fixed_rate is None:
+        raise ValueError("Дневная ставка должна быть фиксированной")
     if end < start:
         raise ValueError("Конец периода раньше начала")
     if (fixed_rate is None) == (rates is None):
@@ -55,7 +57,7 @@ def calculate(principal, start: date, end: date, *, fixed_rate=None,
         ctx.prec = 40
         while True:
             rate = changes.get(day, rate)
-            denominator = 366 if isleap(day.year) else 365
+            denominator = 1 if daily_rate else (366 if isleap(day.year) else 365)
             key = (balance, rate, denominator)
             daily = balance * rate / Decimal(100 * denominator)
             if segments and segments[-1]["key"] == key:
@@ -80,4 +82,4 @@ def calculate(principal, start: date, end: date, *, fixed_rate=None,
                          "denominator": denominator, "interest": str(s["raw"].quantize(CENT, ROUND_HALF_UP))})
         return {"interest": str(total.quantize(CENT, ROUND_HALF_UP)),
                 "remaining_principal": str(balance.quantize(CENT, ROUND_HALF_UP)),
-                "segments": rows, "rounding": "Итог округляется один раз; строки показаны до копеек"}
+                "segments": rows, "rate_unit": "day" if daily_rate else "year", "rounding": "Итог округляется один раз; строки показаны до копеек"}
