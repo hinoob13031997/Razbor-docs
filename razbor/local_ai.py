@@ -19,7 +19,7 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["finding
                   "page": {"type": "integer"},
                   "quote": {"type": "string"}}}}}}
 
-def _request(method, path, body=None, timeout=180):
+def _request(method, path, body=None, timeout=600):
     # HTTPConnection uses a literal loopback address; no proxy or redirect.
     conn = http.client.HTTPConnection("127.0.0.1", 11434, timeout=timeout)
     try:
@@ -39,7 +39,7 @@ def installed_models():
     return [m["name"] for m in _request("GET", "/api/tags", timeout=5).get("models", [])
             if m.get("name") in MODELS]
 
-def analyze_chunk(pages, model="qwen3:8b"):
+def analyze_chunk(pages, model="qwen3:4b"):
     """pages: словарь номер страницы -> распознанный текст.
     Большой документ следует разбивать на блоки. Результат только для проверки человеком.
     """
@@ -57,7 +57,7 @@ def analyze_chunk(pages, model="qwen3:8b"):
               "с одной страницы. Не рассчитывай суммы. При неясности укажи ambiguity. "
               "Верни JSON по схеме.")
     result = _request("POST", "/api/chat", {"model": model, "stream": False,
-        "think": False, "format": SCHEMA, "options": {"temperature": 0, "num_ctx": 16384},
+        "think": False, "keep_alive": 0, "format": SCHEMA, "options": {"temperature": 0, "num_ctx": 8192, "num_thread": 6, "num_predict": 2048},
         "messages": [{"role": "system", "content": prompt},
                      {"role": "user", "content": json.dumps(pages, ensure_ascii=False)}]})
     parsed = json.loads(result["message"]["content"])
@@ -75,3 +75,46 @@ def analyze_chunk(pages, model="qwen3:8b"):
             continue
         valid.append({k: f[k] for k in ("kind", "value", "page", "quote")})
     return {"model": model, "findings": valid, "rejected": rejected, "requires_review": True}
+
+def analyze_file(path, model="qwen3:4b", cancel=None, progress=None):
+    """Читает все страницы; последовательные блоки для ПК с 16 ГБ памяти."""
+    from .reader import read_document, OcrEngine
+    if model not in ("qwen3:4b", "qwen3:8b") or model not in installed_models():
+        raise ValueError("Установите Qwen3 4B или 8B в локальном Ollama")
+    rr = read_document(path, ocr=OcrEngine(lang="rus+eng"), max_ocr_pages=0,
+                       cancel=cancel)
+    chunks = []
+    for p in rr.pages:
+        if not p.text.strip():
+            continue
+        # Перекрытие снижает риск потери фразы на границе.
+        for pos in range(0, len(p.text), 4500):
+            chunks.append({p.index: p.text[pos:pos+5000]})
+            if pos+5000 >= len(p.text):
+                break
+    if not chunks:
+        raise ValueError("Документ не содержит распознанного текста")
+    out = {"model": model, "findings": [], "rejected": 0, "requires_review": True,
+           "warnings": list(rr.warnings), "pages": rr.page_count, "pages_read": rr.pages_read}
+    if rr.pages_read != rr.page_count:
+        out["warnings"].append("Прочитаны не все страницы")
+    if rr.ocr_conf is not None and rr.ocr_conf < 70:
+        out["warnings"].append("Низкая уверенность OCR")
+    seen = set()
+    for i, pages in enumerate(chunks):
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("Остановлено")
+        if progress:
+            progress(i, len(chunks))
+        r = analyze_chunk(pages, model)
+        out["rejected"] += r["rejected"]
+        for f in r["findings"]:
+            key = (f["kind"], f["page"], f["quote"], f["value"])
+            if key not in seen:
+                seen.add(key)
+                out["findings"].append(f)
+    if cancel is not None and cancel.is_set():
+        raise InterruptedError("Остановлено")
+    if progress:
+        progress(len(chunks), len(chunks))
+    return out
