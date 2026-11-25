@@ -146,13 +146,13 @@ def process_item(store: Store, i: int, path: str, base: str, opts: Options, ocr,
 
 def read_batch(store: Store, batch: Batch, cache_path: str, workers: int | None = None,
                progress: Callable[[int, int, str], None] | None = None, cancel: threading.Event | None = None,
-               custom_fields_path: str | None = None, use_ocr: bool = True) -> Batch:
+               custom_fields_path: str | None = None, use_ocr: bool = True, max_ocr_pages: int = 0) -> Batch:
     """Прочитать все файлы пачки и привязать их к договорам. Файл ещё не записан в карточки."""
     cancel = cancel or threading.Event()
     files = list_files(batch.dir)
     total = len(files)
     opts = Options(input_dir=batch.dir, output_path=os.path.join(batch.dir, "_нет.xlsx"), use_ocr=use_ocr,
-                   custom_fields_path=custom_fields_path)
+                   custom_fields_path=custom_fields_path, max_ocr_pages=max_ocr_pages)
     if workers:
         opts.workers = workers
     ocr = OcrEngine(lang=opts.ocr_lang) if use_ocr else None
