@@ -12,6 +12,26 @@ def init(store):
         c.execute("""CREATE TABLE IF NOT EXISTS court_dossier_docs(
           dossier_id INTEGER NOT NULL, sha TEXT NOT NULL, data TEXT NOT NULL,
           PRIMARY KEY(dossier_id,sha))""")
+    init_calculations(store)
+
+def init_calculations(store):
+    with store.write() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS court_calculations(
+          id INTEGER PRIMARY KEY,dossier_id INTEGER NOT NULL,created TEXT NOT NULL,
+          inputs TEXT NOT NULL,result TEXT NOT NULL,source_sha TEXT)""")
+
+def save_calculation(store,did,inputs,result):
+    with store.write() as c:
+        row=c.execute("SELECT reviewed_doc FROM court_dossiers WHERE id=?",(did,)).fetchone()
+        if not row:
+            raise ValueError("Досье не найдено")
+        return c.execute("INSERT INTO court_calculations(dossier_id,created,inputs,result,source_sha) VALUES(?,?,?,?,?)",
+                         (did,datetime.now().isoformat(timespec="seconds"),
+                          json.dumps(inputs,ensure_ascii=False),json.dumps(result,ensure_ascii=False),row[0])).lastrowid
+
+def calculations(store,did):
+    rows=store.q("SELECT * FROM court_calculations WHERE dossier_id=? ORDER BY id DESC",(did,))
+    return [dict(r,inputs=json.loads(r["inputs"]),result=json.loads(r["result"])) for r in rows]
 
 def list_dossiers(store):
     return store.q("SELECT d.id,d.title,d.created,COUNT(x.sha) AS count FROM court_dossiers d LEFT JOIN court_dossier_docs x ON x.dossier_id=d.id GROUP BY d.id ORDER BY d.id DESC")
@@ -82,7 +102,7 @@ def detail(store, did):
     if any(any(f["name"]=="Начисление до исполнения" for f in x["fields"]) for x in docs):
         warnings.append("Найдены условия продолжающегося начисления: проверьте базу, ставку и платежи.")
     warnings.append("Хронология по извлечённым датам предварительная. Суммы не складываются автоматически.")
-    return dict(d,documents=docs,warnings=warnings)
+    return dict(d,documents=docs,warnings=warnings,calculations=calculations(store,did))
 
 def review(store,did,sha,note):
     if not isinstance(note,str) or len(note)>5000:
