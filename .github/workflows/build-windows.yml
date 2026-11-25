@@ -36,6 +36,9 @@ jobs:
       - name: Проверка судебных досье (без сети)
         run: python tests/test_dossiers.py
 
+      - name: Проверка расширенных автономных инструментов
+        run: python tests/test_advanced.py
+
       - name: Проверка калькулятора (без сети)
         run: python tests/test_interest_ai.py InterestTest
 

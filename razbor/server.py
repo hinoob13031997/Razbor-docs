@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import batch as B
-from . import crm, folders, matcher, rules, templates, interest, dossiers
+from . import crm, folders, matcher, rules, templates, interest, dossiers, advanced
 from .actions import next_actions
 from .paths import _bundle_dir, app_dir
 from .store import Store
@@ -92,6 +92,7 @@ class Ctx:
         self.base = base
         self.store = Store(str(base / "razbor.sqlite"))
         dossiers.init(self.store)
+        advanced.init(self.store)
         self.uploads = base / "uploads"
         self.docs = base / "docs"
         self.batches = base / "batches"
@@ -382,7 +383,7 @@ class Handler(BaseHTTPRequestHandler):
                     "", f"http://127.0.0.1:{self.ctx.port}", f"http://localhost:{self.ctx.port}"):
                 return self._err(403, "Чужой источник запроса")
             if path.startswith("/api/"):
-                if method == "POST" and not path.endswith("/upload"):
+                if method == "POST" and not path.endswith(("/upload","/payment-upload")):
                     if int(self.headers.get("Content-Length") or 0) > 5_000_000:
                         return self._err(413, "Слишком большой запрос")
                     self._body()
@@ -443,6 +444,37 @@ class Handler(BaseHTTPRequestHandler):
         head = parts[0]
         today = date.today()
 
+        if head in ("rates", "indexation", "practice", "redact", "backup"):
+            try:
+                if head=="rates":
+                    if method=="POST":
+                        d=self._jbody()
+                        advanced.save_rates(st,d["rows"],d["verified"],d["source"])
+                    return self._json(advanced.rates(st))
+                if head=="indexation" and method=="POST":
+                    d=self._jbody()
+                    return self._json(advanced.indexation(d["amount"],d["months"]))
+                if head=="practice":
+                    if method=="POST":
+                        d=self._jbody()
+                        return self._json({"id":advanced.practice_save(st,d["title"],d["category"],d["summary"],d.get("confirmed"))})
+                    return self._json(advanced.practice_list(st))
+                if head=="redact" and method=="POST":
+                    d=self._jbody()
+                    return self._json({"text":advanced.redact(d["text"],d["terms"])})
+                if head=="backup" and method=="POST":
+                    if ctx.busy():
+                        return self._err(409,"Дождитесь завершения обработки")
+                    with ctx.lock:
+                        name=advanced.backup(st)
+                    try:
+                        return self._file(name,"RazborDocs-backup-"+today.isoformat()+".zip",download=True)
+                    finally:
+                        os.unlink(name)
+            except (ValueError,TypeError,KeyError,OSError,ArithmeticError) as e:
+                return self._err(400,str(e))
+            return self._err(404,"Действие не найдено")
+
         if head == "dossiers":
             try:
                 if len(parts)==1 and method=="GET":
@@ -458,7 +490,21 @@ class Handler(BaseHTTPRequestHandler):
                     did=int(parts[1])
                     if len(parts)==2 and method=="GET":
                         data=dossiers.detail(st,did)
-                        return self._json(data) if data else self._err(404,"Досье не найдено")
+                        if not data:
+                            return self._err(404,"Досье не найдено")
+                        data["suggestions"]=advanced.suggestions(data["documents"],data["links"])
+                        data["crm"]=advanced.crm_checks(st,did)
+                        return self._json(data)
+                    if len(parts)==3 and parts[2]=="crm" and method=="POST":
+                        advanced.connect_crm(st,did,int(self._jbody()["contract_id"]))
+                        return self._json({"ok":True})
+                    if len(parts)==3 and parts[2]=="payment-template" and method=="GET":
+                        return self._send(200,"\ufeffДата;Сумма;В базу;Номер платежа\r\n".encode("utf-8"),"text/csv; charset=utf-8",{"Content-Disposition":"attachment; filename=payments.csv"})
+                    if len(parts)==3 and parts[2]=="payment-upload" and method=="POST":
+                        if not 0<int(self.headers.get("Content-Length") or 0)<=15*1024*1024:
+                            return self._err(413,"Файл больше 15 МБ или пуст")
+                        rows=advanced.payment_rows(self._body(),q.get("name",""))
+                        return self._json({"added":dossiers.add_payments(st,did,rows)})
                     if len(parts)==4 and parts[2]=="original" and method=="GET":
                         original=dossiers.original(st,did,parts[3])
                         if not original:
