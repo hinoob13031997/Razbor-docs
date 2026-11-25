@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import batch as B
-from . import crm, folders, matcher, rules, templates, local_ai, interest
+from . import crm, folders, matcher, rules, templates, interest, dossiers
 from .actions import next_actions
 from .paths import _bundle_dir, app_dir
 from .store import Store
@@ -91,6 +91,7 @@ class Ctx:
     def __init__(self, base: Path):
         self.base = base
         self.store = Store(str(base / "razbor.sqlite"))
+        dossiers.init(self.store)
         self.uploads = base / "uploads"
         self.docs = base / "docs"
         self.batches = base / "batches"
@@ -442,12 +443,32 @@ class Handler(BaseHTTPRequestHandler):
         head = parts[0]
         today = date.today()
 
-        if head == "ai-status" and method == "GET":
+        if head == "dossiers":
             try:
-                return self._json({"models": local_ai.installed_models(), "available": True})
-            except Exception:
-                return self._json({"models": [], "available": False})
+                if len(parts)==1 and method=="GET":
+                    return self._json(dossiers.list_dossiers(st))
+                if len(parts)==2 and parts[1]=="attach" and method=="POST":
+                    d=self._jbody()
+                    b=ctx.get_batch(d.get("batch",""))
+                    if not b or b.state not in ("ready","written"):
+                        return self._err(409,"Сначала завершите чтение документов")
+                    did=dossiers.attach(st,b,d.get("indices"),d.get("title",""),d.get("dossier_id"))
+                    return self._json({"id":did})
+                if len(parts)>=2 and parts[1].isdigit():
+                    did=int(parts[1])
+                    if len(parts)==2 and method=="GET":
+                        data=dossiers.detail(st,did)
+                        return self._json(data) if data else self._err(404,"Досье не найдено")
+                    if len(parts)==3 and parts[2]=="review" and method=="POST":
+                        d=self._jbody()
+                        dossiers.review(st,did,d.get("sha"),d.get("note",""))
+                        return self._json({"ok":True})
+            except (ValueError,TypeError,KeyError) as e:
+                return self._err(400,str(e))
+            return self._err(404,"Действие не найдено")
 
+        if head == "ai-status" and method == "GET":
+            return self._json({"models": [], "available": False, "disabled": True})
         if head == "interest" and method == "POST":
             try:
                 d = self._jbody()
@@ -615,48 +636,7 @@ class Handler(BaseHTTPRequestHandler):
                 ctx.run_job(job, run)
                 return self._json(job.info())
             if sub == "ai" and method == "POST":
-                d = self._jbody()
-                indices = d.get("indices", [d.get("idx")])
-                if not isinstance(indices, list) or not indices or len(indices) > 100 or any(type(i) is not int for i in indices):
-                    return self._err(400, "Выберите от 1 до 100 документов")
-                by_idx = {i.idx: i for i in b.items}
-                selected = [by_idx.get(i) for i in dict.fromkeys(indices)]
-                model = d.get("model", "qwen3:4b")
-                if model not in ("qwen3:4b", "qwen3:8b"):
-                    return self._err(400, "Выберите локальную модель 4B или 8B")
-                if any(not it or not os.path.isfile(it.path) or not it.sha for it in selected):
-                    return self._err(404, "Один из исходных документов недоступен")
-                with ctx.lock:
-                    if ctx.busy() or b.state == "reading":
-                        return self._err(409, "Сейчас выполняется другая задача")
-                    def analyze_job(j):
-                        from .reader import Cancelled, file_sha256
-                        errors = []
-                        j.total = len(selected)
-                        for n, it in enumerate(selected):
-                            if j.cancel.is_set():
-                                raise InterruptedError("Остановлено")
-                            j.msg = it.name
-                            try:
-                                if file_sha256(it.path) != it.sha:
-                                    raise ValueError("Файл изменился: загрузите его заново")
-                                result = local_ai.analyze_file(it.path, model, j.cancel,
-                                    lambda k, t: setattr(j, "msg", f"{it.name}: блок {k} из {t}"))
-                                if j.cancel.is_set():
-                                    raise InterruptedError("Остановлено")
-                                if file_sha256(it.path) != it.sha:
-                                    raise ValueError("Файл изменился во время анализа")
-                                with ctx.lock:
-                                    it.ai_analysis = result
-                                    b.save(str(ctx.batches))
-                            except (Cancelled, InterruptedError):
-                                raise InterruptedError("Остановлено")
-                            except Exception as e:
-                                errors.append({"idx": it.idx, "name": it.name, "error": str(e)})
-                            j.done = n + 1
-                        return {"batch": b.id, "completed": len(selected) - len(errors), "errors": errors}
-                    job = ctx.run_job(Job("ai", "Локальный ИИ: анализ документов"), analyze_job)
-                    return self._json(job.info())
+                return self._err(403, "ИИ временно отключён")
             if sub in ("pick", "skip", "write") and any(j.kind == "ai" and j.state == "running" for j in ctx.jobs.values()):
                 return self._err(409, "Дождитесь завершения анализа ИИ")
             if sub in ("pick", "skip", "write") and b.state == "reading":
