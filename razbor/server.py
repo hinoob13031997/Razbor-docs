@@ -616,33 +616,46 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(job.info())
             if sub == "ai" and method == "POST":
                 d = self._jbody()
-                it = next((i for i in b.items if i.idx == d.get("idx")), None)
+                indices = d.get("indices", [d.get("idx")])
+                if not isinstance(indices, list) or not indices or len(indices) > 100 or any(type(i) is not int for i in indices):
+                    return self._err(400, "Выберите от 1 до 100 документов")
+                by_idx = {i.idx: i for i in b.items}
+                selected = [by_idx.get(i) for i in dict.fromkeys(indices)]
                 model = d.get("model", "qwen3:4b")
                 if model not in ("qwen3:4b", "qwen3:8b"):
                     return self._err(400, "Выберите локальную модель 4B или 8B")
-                if not it or not os.path.isfile(it.path) or not it.sha:
-                    return self._err(404, "Исходный документ недоступен")
+                if any(not it or not os.path.isfile(it.path) or not it.sha for it in selected):
+                    return self._err(404, "Один из исходных документов недоступен")
                 with ctx.lock:
                     if ctx.busy() or b.state == "reading":
                         return self._err(409, "Сейчас выполняется другая задача")
                     def analyze_job(j):
                         from .reader import Cancelled, file_sha256
-                        if file_sha256(it.path) != it.sha:
-                            raise ValueError("Файл изменился: загрузите его заново")
-                        try:
-                            result = local_ai.analyze_file(it.path, model, j.cancel,
-                                lambda n, t: (setattr(j, "done", n), setattr(j, "total", t)))
-                        except Cancelled:
-                            raise InterruptedError("Остановлено")
-                        if j.cancel.is_set():
-                            raise InterruptedError("Остановлено")
-                        if file_sha256(it.path) != it.sha:
-                            raise ValueError("Файл изменился во время анализа")
-                        with ctx.lock:
-                            it.ai_analysis = result
-                            b.save(str(ctx.batches))
-                        return {"batch": b.id, "idx": it.idx}
-                    job = ctx.run_job(Job("ai", "Локальный ИИ: анализ документа"), analyze_job)
+                        errors = []
+                        j.total = len(selected)
+                        for n, it in enumerate(selected):
+                            if j.cancel.is_set():
+                                raise InterruptedError("Остановлено")
+                            j.msg = it.name
+                            try:
+                                if file_sha256(it.path) != it.sha:
+                                    raise ValueError("Файл изменился: загрузите его заново")
+                                result = local_ai.analyze_file(it.path, model, j.cancel,
+                                    lambda k, t: setattr(j, "msg", f"{it.name}: блок {k} из {t}"))
+                                if j.cancel.is_set():
+                                    raise InterruptedError("Остановлено")
+                                if file_sha256(it.path) != it.sha:
+                                    raise ValueError("Файл изменился во время анализа")
+                                with ctx.lock:
+                                    it.ai_analysis = result
+                                    b.save(str(ctx.batches))
+                            except (Cancelled, InterruptedError):
+                                raise InterruptedError("Остановлено")
+                            except Exception as e:
+                                errors.append({"idx": it.idx, "name": it.name, "error": str(e)})
+                            j.done = n + 1
+                        return {"batch": b.id, "completed": len(selected) - len(errors), "errors": errors}
+                    job = ctx.run_job(Job("ai", "Локальный ИИ: анализ документов"), analyze_job)
                     return self._json(job.info())
             if sub in ("pick", "skip", "write") and any(j.kind == "ai" and j.state == "running" for j in ctx.jobs.values()):
                 return self._err(409, "Дождитесь завершения анализа ИИ")
