@@ -76,6 +76,25 @@ class DossierTest(unittest.TestCase):
         self.assertIn("Признак результата: Взыскание",r)
         self.assertNotIn("Начисление до исполнения",extract_review(Doc(["Истец просил взыскать проценты по день фактического исполнения."])))
 
+    def test_cover_letter_and_decision(self):
+        from datetime import date
+        from razbor.reader import PageText, ReadResult
+        from razbor.analyze import analyze
+        from razbor import namecheck, matcher
+        cover="04.02.2026\nТестовый районный суд направляет в Ваш адрес копию решения."
+        decision="Дело № 2-159/2026\nРЕШЕНИЕ\nИменем Российской Федерации\n28 января 2026 года\nТестовый районный суд, рассмотрев дело по иску кредитора.\nЗаёмщику предоставлен кредит в сумме 615 000 руб.\nСуд РЕШИЛ: Взыскать основной долг в размере 44 917,93 руб.; неустойку в размере 24 659,94 руб.; расходы по оплате услуг представителя 10 000 руб.; государственную пошлину 8 039 руб. В остальной части отказать."
+        a=analyze(ReadResult(pages=[PageText(1,cover,"text"),PageText(2,decision,"text")],page_count=2))
+        self.assertEqual(a.doc_key,"decision")
+        self.assertEqual(a.fields["Дата документа"].value,date(2026,1,28))
+        self.assertEqual(a.pages["Дата документа"],2)
+        self.assertNotIn("Сумма основная",a.fields)
+        self.assertNotIn("amount_granted",matcher.facts_from(a))
+        self.assertNotIn("615",a.summary)
+        self.assertIn("отказ",a.fields["Результат рассмотрения"].value)
+        self.assertEqual(namecheck.check_name("РЕШЕНИЕ_от_28.01.2026.pdf",a).verdict,"ok")
+        self.assertTrue(any("госпошлина" in k for k in a.fields if k.startswith("Сумма в резолютивной части")))
+        self.assertTrue(any("расходы представителя" in k for k in a.fields if k.startswith("Сумма в резолютивной части")))
+
     def test_classification(self):
         self.assertEqual(classify.classify("АПЕЛЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ\nСудебная коллегия рассмотрела жалобу.").key,"appeal")
         self.assertEqual(classify.classify("КАССАЦИОННОЕ ОПРЕДЕЛЕНИЕ\nСудебная коллегия рассмотрела жалобу.").key,"cassation")
