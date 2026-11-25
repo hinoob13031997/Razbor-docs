@@ -3,8 +3,9 @@
 Ни один найденный признак не подтверждает юридическую силу акта автоматически.
 """
 import re
+from decimal import Decimal
 from .fields import Hit, CASE_LABELED, CASE_HASH, find_amounts, Doc, COURT_PATTERNS, COURT_TRIM
-from .textutil import find_dates
+from .textutil import find_dates, fmt_money
 
 OPERATIVE = re.compile(r"(?im)(?:^[ \t]*(?:суд(?:ебная коллегия)?[ \t]+)?(?:решил[аи]?|определил[аи]?|постановил[аи]?)(?:[ \t]*:[ \t]*|[ \t]*$)|\bсуд[ \t]+(?:РЕШИЛ|ОПРЕДЕЛИЛ|ПОСТАНОВИЛ)[ \t]*:)")
 TITLE = re.compile(r"(?im)^[ \t]*(?:заочное[ \t]+решение|решение|апелляционное[ \t]+определение|кассационное[ \t]+определение|апелляционное[ \t]+постановление|кассационное[ \t]+постановление)[ \t]*$")
@@ -67,7 +68,7 @@ def amount_label(text,a,previous_end):
             return label
     return "назначение не определено"
 
-CONTINUING = re.compile(r"(?i)(?:по|до)\s+(?:день|дату|момент|даты|дня|момента)?\s*фактическ\w+\s+(?:исполнени\w+|погашени\w+|возврат\w+)|до\s+полного\s+погашения")
+CONTINUING = re.compile(r"(?i)(?:по|до)\s+(?:день|дату|момент|даты|дня|момента)?\s*фактическ\w+\s+(?:исполнени\w+|погашени\w+|возврат\w+)|(?:до|по\s+дату)\s+полного\s+погашения|по\s+дату\s+погашения")
 INTEREST = re.compile(r"(?i)процент\w+|неустойк\w+|пен[яий]\w*")
 RESULTS = [
     ("Отмена / новое рассмотрение", r"отменить[^;]{0,350}направить[^;]{0,100}новое\s+рассмотрение"),
@@ -113,22 +114,7 @@ def extract_review(doc):
         out["Результат рассмотрения"]=Hit("В резолютивной части есть отказ",pos,pos+min(300,len(tail)),"предварительный вывод")
     # Сохраняем весь фрагмент, а не только короткое окружение найденной суммы.
     out["Резолютивная часть"]=Hit(tail.strip()[:14000],pos,pos+min(len(tail),14000),"проверить по оригиналу")
-    # Полная фраза о продолжающемся начислении — без догадки о базе и ставке.
-    for m in CONTINUING.finditer(tail):
-        lo, hi = max(0,m.start()-350), min(len(tail),m.end()+160)
-        excerpt = tail[lo:hi]
-        if INTEREST.search(excerpt):
-            out["Начисление до исполнения"] = Hit(re.sub(r"\s+"," ",excerpt).strip(),
-                                                  pos+lo,pos+hi,"условия проверить вручную")
-            # Не ограничиваемся первым начислением: сохраняем остальные условия отдельно.
-            extra = list(CONTINUING.finditer(tail))
-            for j, x in enumerate(extra, 1):
-                if x.start() == m.start():
-                    continue
-                aa, bb = max(0,x.start()-350), min(len(tail),x.end()+160)
-                if INTEREST.search(tail[aa:bb]):
-                    out[f"Начисление до исполнения {j}"] = Hit(re.sub(r"\s+"," ",tail[aa:bb]).strip(),pos+aa,pos+bb,"условия проверить вручную")
-            break
+    out.update(structured_awards(tail,pos))
     cases = []
     for rx in (CASE_LABELED, CASE_HASH):
         for m in rx.finditer(doc.text):
@@ -138,3 +124,113 @@ def extract_review(doc):
     for i,(v,a,b) in enumerate(cases[:15],1):
         out[f"Упомянутое дело {i}"] = Hit(v,a,b,"ссылка в тексте, не подтверждённая связь")
     return out
+
+# Разделяем только явные предписания из резолютивной части, не мотивировку.
+RATE = re.compile(r"(\d{1,3}(?:[.,]\d{1,5})?)\s*%\s*(годовых|за\s+каждый\s+день(?:\s+просрочки)?|в\s+день)",re.I)
+REFUSAL = re.compile(r"(?i)\b(?:в\s+остальной\s+части|отказать|оставить\s+без\s+удовлетворения)")
+EXPENSE = re.compile(r"(?i)\bрасход\w*\s+(?:по\s+оплате\s+)?(?:услуг\w*\s+)?представител\w*|\b(?:государственн\w+\s+пошлин\w*|госпошлин\w*)")
+def component(clause):
+    c=re.sub(r"\s+"," ",clause.lower())
+    if re.search(r"неустойк\w*\s+за\s+просрочк\w*\s+уплат\w*\s+процент",c):
+        return "Неустойка по процентам"
+    if re.search(r"неустойк\w*\s+за\s+просрочк\w*\s+уплат\w*\s+основн",c):
+        return "Неустойка по основному долгу"
+    if re.search(r"процент\w*\s+за\s+пользовани\w*\s+кредит",c):
+        return "Проценты за пользование кредитом"
+    if re.search(r"основн\w+\s+долг",c) and not re.search(r"процент|неустойк",c):
+        return "Основной долг"
+    return None
+
+def structured_awards(tail,pos):
+    out={}
+    # Не классифицируем в качестве взыскания суммы из актов отмены/изменения.
+    if not re.search(r"(?i)\bвзыскать\b",tail) or re.search(r"(?i)\b(?:отменить|изменить)\b",tail):
+        return out
+    refusal=REFUSAL.search(tail)
+    end=refusal.start() if refusal else len(tail)
+    active=tail[:end]
+    fixed=[]
+    uncertain=False
+    for m in re.finditer(r"[^;]+",active):
+        part=m.group()
+        shift=pos+m.start()
+        # Судебные расходы часто стоят в конце последнего пункта после «а также».
+        split=re.search(r"(?i)[,]\s*а\s+также\s+(?=\d)",part)
+        rest=part[split.end():] if split else ""
+        body=part[:split.start()] if split else part
+        label=component(body)
+        amounts=find_amounts(body)
+        cont=CONTINUING.search(body)
+        if cont and INTEREST.search(body):
+            n=1+sum(k.startswith("Начисление до исполнения") for k in out)
+            rate=RATE.search(body)
+            dates=find_dates(body)
+            start=re.search(r"(?i)\b(?:период\s+)?с\s*(\d{1,2}[./]\d{1,2}[./]\d{4})",body)
+            start_dates=find_dates(start.group(1)) if start else []
+            basis=re.search(r"(?i)(?:на\s+)?остат\w*\s+основн\w+\s+долг\w*|сумм\w*\s+задолженност\w*\s+по\s+процент",body)
+            desc=[label or "Вид начисления уточнить"]
+            if rate:
+                desc.append(rate.group(1).replace(".",",")+"% "+("годовых" if rate.group(2).lower()=="годовых" else "в день"))
+            if start_dates:
+                desc.append("с "+start_dates[0][0].strftime("%d.%m.%Y"))
+            desc.append(re.sub(r"\s+"," ",cont.group()))
+            if basis:
+                desc.append(re.sub(r"\s+"," ",basis.group()))
+            if amounts:
+                if len(amounts)==1 and basis:
+                    desc.append("сумма базы: "+fmt_money(amounts[0].value)+" ₽ (проверить)")
+                else:
+                    uncertain=True
+            out["Начисление до исполнения" if n==1 else f"Начисление до исполнения {n}"]=Hit(" · ".join(desc),shift,shift+len(body),"условия и база требуют подтверждения; не включать в фиксированное взыскание")
+            if not (label and rate and start_dates and basis):
+                uncertain=True
+        elif label and len(amounts)==1 and not re.search(r"%|в\s+день|до\s+погашения",body,re.I):
+            a=amounts[0]
+            fixed.append((label,a.value,shift+a.pos,shift+a.end))
+        elif amounts:
+            # Расходы могут стоять отдельным пунктом; метки справа или слева.
+            if not EXPENSE.search(body):
+                uncertain=True
+            else:
+                rest=body+("; "+rest if rest else "")
+        if rest:
+            shift_rest=shift+split.end() if split else shift
+            aa=find_amounts(rest)
+            for j,a in enumerate(aa):
+                before=rest[aa[j-1].end if j else 0:a.pos]
+                after=rest[a.end:aa[j+1].pos if j+1<len(aa) else len(rest)]
+                # Метка после числа ограничивается ближайшей запятой.
+                next_label=EXPENSE.search(after.split(",")[0])
+                prev_label=EXPENSE.search(before)
+                hit=next_label or prev_label
+                if not hit:
+                    uncertain=True
+                    continue
+                typ="Госпошлина" if re.search(r"пошлин",hit.group(),re.I) else "Расходы представителя"
+                fixed.append((typ,a.value,shift_rest+a.pos,shift_rest+a.end))
+    for n,(label,value,a,b) in enumerate(fixed,1):
+        out[f"Фиксированное взыскание {n}: {label}"]=Hit(value,a,b,"предварительно; сверить оригинал")
+    # Сумма только распознанных фиксированных позиций, не юридический остаток.
+    if fixed:
+        total=sum((r[1] for r in fixed),Decimal(0))
+        out["Итого распознанных фиксированных взысканий"]=Hit(total,fixed[0][2],fixed[-1][3],
+            "неполный итог: есть неразобранные условия или суммы" if uncertain else "предварительный итог распознанных позиций; не остаток задолженности")
+    return out
+
+def additional_dates(doc,fields):
+    for key,pattern in [
+        ("Дата мотивированного решения",r"(?i)мотивированн\w+\s+решени\w+\s+изготовлен\w*\s+"),
+    ]:
+        m=re.search(pattern,doc.text)
+        if m:
+            dates=find_dates(doc.text[m.end():m.end()+60])
+            if dates:
+                d,a,b=dates[0]
+                fields[key]=Hit(d,m.end()+a,m.end()+b,"отдельная дата")
+    for p,txt in enumerate(doc.pages[:2]):
+        if COVER.search(txt):
+            dates=find_dates(txt[:1200])
+            if dates:
+                d,a,b=dates[0]
+                fields["Дата сопроводительного письма"]=Hit(d,doc.starts[p]+a,doc.starts[p]+b,"не дата решения")
+            break
