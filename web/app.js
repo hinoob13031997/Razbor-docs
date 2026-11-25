@@ -777,13 +777,16 @@ async function Dossiers(parts) {
       x.reasons.length?h("p",{class:"small err"},x.reasons.join("; ")):null,fields);
   });
   return h("div",null,h("a",{class:"link",href:"#/dossiers"},"← Все досье"),
-    header(d.title,d.documents.length+" документов",h("a",{class:"btn",href:"#/batch"},"Добавить документы"),h("a",{class:"btn",href:"#/interest"},"Калькулятор")),
+    header(d.title,d.documents.length+" документов",h("a",{class:"btn",href:"#/batch"},"Добавить документы"),h("a",{class:"btn",href:"#/interest?dossier="+d.id},"Калькулятор")),
     h("div",{class:"card mb"},h("h2",null,"Проверка судебных актов"),d.warnings.map(w=>h("p",{class:"small muted"},w)),
       h("label",null,"Акт, выбранный сотрудником после проверки",select),h("label",null,"Комментарий и основания",note),
       h("button",{class:"btn btn-p mt",onclick:async()=>{try{await api("dossiers/"+d.id+"/review",{sha:select.value,note:note.value});msg.replaceChildren(h("p",null,"Сохранено"));}catch(e){msg.replaceChildren(errBox(e.message))}}},"Сохранить заключение"),msg),
+    h("div",{class:"card mb"},h("h2",null,"История расчётов"),(d.calculations||[]).length?(d.calculations||[]).map(x=>h("div",{style:"padding:8px 0;border-top:1px solid #EBEEF3"},h("b",null,fd(x.created)+" · "+money(x.result.interest)),h("div",{class:"small muted"},fd(x.inputs.start)+" — "+fd(x.inputs.end)+" · база "+money(x.inputs.principal)),h("div",{class:"small muted"},x.source_sha&&x.source_sha===d.reviewed_doc?"Привязан к выбранному акту; условия проверить":"Требуется сверка с действующим актом"))):h("p",{class:"muted"},"Расчётов пока нет.")),
     h("h2",null,"Хронология"),blocks);
 }
-async function Interest() {
+async function Interest(parts,params) {
+  const did=Number(params.get("dossier"))||null;
+  const dossier=did?await api("dossiers/"+did):null;
   const field=(label,attrs={})=>{const i=h("input",{class:"fld",...attrs});return [h("label",null,h("div",{class:"small muted"},label),i),i]};
   const [lp,p]=field("База начисления, ₽",{type:"number",min:0,step:"0.01"});
   const [ls,start]=field("Начало (включительно)",{type:"date"});
@@ -801,20 +804,21 @@ async function Interest() {
     if(!day||!v||rest.length)throw new Error("Строка должна иметь формат дата;значение");
     return {date:day,[key]:v.replace(",",".")};
   });
-  const calculate=h("button",{class:"btn btn-p",onclick:async()=>{
+  const calculate=h("button",{class:"btn btn-p",onclick:async(e)=>{
+    e.target.disabled=true;
     result.replaceChildren();
     try{
       if(!p.value||!start.value||!end.value|| (mode.value==="fixed"&&!rate.value)) throw new Error("Заполните обязательные поля");
       const r=await api("interest",{principal:p.value,start:start.value,end:end.value,mode:mode.value,rate:rate.value,
-        verified_through:verified.value,rates:parse(rates.value,"rate"),payments:parse(payments.value,"amount")});
+        verified_through:verified.value,rates:mode.value==="variable"?parse(rates.value,"rate"):[],payments:parse(payments.value,"amount"),dossier_id:did});
       result.replaceChildren(h("h2",null,"Начислено: "+money(r.interest)),h("p",null,"Остаток базы: "+money(r.remaining_principal)),
         h("div",{class:"scroll"},h("table",{class:"tbl"},
           h("thead",null,h("tr",null,["Начало","Конец","Дней","База","Ставка %","Дней в году","Проценты"].map(x=>h("th",null,x)))),
           h("tbody",null,r.segments.map(x=>h("tr",null,[fd(x.start),fd(x.end),x.days,money(x.base),x.rate,x.denominator,money(x.interest)].map(y=>h("td",null,y))))))),
-        h("p",{class:"small muted"},r.rounding));
-    }catch(e){result.replaceChildren(errBox(e.message))}
-  }},"Рассчитать");
-  return h("div",null,header("Калькулятор процентов","Простые годовые проценты; условия судебного акта необходимо подтвердить."),
+        h("p",{class:"small muted"},r.rounding),r.saved_id?h("p",null,"Расчёт сохранён в досье"):null);
+    }catch(e){result.replaceChildren(errBox(e.message))}finally{e.target.disabled=false}
+  }},did?"Рассчитать и сохранить":"Рассчитать");
+  return h("div",null,dossier?h("a",{class:"link",href:"#/dossiers/"+did},"← "+dossier.title):null,header("Калькулятор процентов","Простые годовые проценты; условия судебного акта необходимо подтвердить."),
     h("div",{class:"card"},h("div",{class:"grid g2"},lp,ls,le,mode,lr),variable,
       h("p",{class:"small muted"},"Погашения именно базы начисления (не общая сумма платежа): дата; сумма. База уменьшается со следующего дня. Не учитываются особые ограничения, моратории, капитализация и другие исключения."),
       payments,h("div",{class:"mt"},calculate),result));
