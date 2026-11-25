@@ -519,6 +519,7 @@ async function BatchView(id) {
       h("div", { class: "sticky" },
         h("span", null, b.state === "written" ? "Всё записано." : "К записи: " + toWrite + " " + plural(toWrite, "документ", "документа", "документов") + " в " + contracts + " " + plural(contracts, "договор", "договора", "договоров")),
         h("div", { class: "row" },
+          h("button", {class:"btn", disabled:b.state==="reading", onclick:()=>aiGroupDialog(b)}, "ИИ: несколько документов"),
           h("a", { class: "btn", href: "#/batch" }, "Загрузить ещё"),
           h("button", { class: "btn btn-p", disabled: !toWrite, onclick: async (e) => {
             e.target.disabled = true;
@@ -752,7 +753,7 @@ async function aiDialog(id, idx, name, canRead) {
           const j=await api("batch/"+id+"/ai",{idx,model:select.value});
           panel.replaceChildren(h("p",null,"Выполняется локальный анализ. Прогресс и остановка — в верхней части экрана."));
           const result=await watchJob(j.id);
-          if(result.state==="error") panel.replaceChildren(errBox(result.error),h("button",{class:"btn",onclick:draw},"Назад"));
+          if(result.state==="error" || result.result?.errors?.length) panel.replaceChildren(errBox(result.error || result.result.errors.map(x=>x.error).join("; ")),h("button",{class:"btn",onclick:draw},"Назад"));
           else await draw();
         }catch(e){panel.replaceChildren(errBox(e.message),h("button",{class:"btn",onclick:draw},"Назад"))}
       }},"Запустить анализ")):h("p",null,"Не найдена локальная модель. Установите Ollama и выполните ollama pull qwen3:4b."),
@@ -765,6 +766,51 @@ async function aiDialog(id, idx, name, canRead) {
           h("blockquote",{class:"small muted"},f.quote))):h("p",null,"Подтверждаемые цитатами сведения не найдены.")):null);
   }
   try {await draw()} catch(e){panel.replaceChildren(errBox(e.message))}
+}
+async function aiGroupDialog(b) {
+  const panel=h("div",null,"Загружаю…");
+  openModal([h("h2",null,"Анализ нескольких судебных актов"),panel,h("button",{class:"btn mt",onclick:closeModal},"Закрыть")]);
+  const chosen=new Set();
+  async function draw(errors=[]) {
+    const status=await api("ai-status");
+    const models=status.models.filter(x=>["qwen3:4b","qwen3:8b"].includes(x));
+    const model=h("select",{class:"fld"},models.map(x=>h("option",{value:x},x)));
+    const items=b.items.filter(x=>x.status!=="error" && (!x.written||b.source));
+    const rows=h("div",{style:"max-height:300px;overflow:auto"},
+      items.map(x=>h("label",{class:"row",style:"padding:5px 0"},h("input",{type:"checkbox",checked:chosen.has(x.idx),onchange:e=>{
+        if(e.target.checked) chosen.add(x.idx); else chosen.delete(x.idx);
+      }}),h("span",null,x.name))));
+    const output=h("div",{class:"mt"});
+    const show=async()=>{
+      output.replaceChildren(h("p",null,"Загружаю сохранённые выводы…"));
+      try {
+        const data=await Promise.all([...chosen].map(idx=>api("batch/"+b.id+"/item/"+idx)));
+        output.replaceChildren(h("h2",null,"Сведения по выбранным актам"),
+          h("p",{class:"small muted"},"Сопоставьте даты, номера дел и ссылки на предыдущие акты. Суммы не складываются; действующий судебный акт и принадлежность одному должнику необходимо подтвердить."),
+          data.map(d=>h("div",{class:"card mb"},h("b",null,d.name),
+            d.ai_analysis?.model?[
+              (d.ai_analysis.warnings||[]).map(w=>h("p",{class:"small err"},w)),
+              (d.ai_analysis.findings||[]).map(f=>h("div",{style:"padding:5px 0"},h("b",null,(AI_LABELS[f.kind]||f.kind)+" · стр. "+f.page),h("p",null,f.value),h("span",{class:"small muted"},f.quote)))
+            ]:h("p",{class:"small muted"},"Анализ пока не сохранён."))));
+      }catch(e){output.replaceChildren(errBox(e.message))}
+    };
+    panel.replaceChildren(h("p",{class:"small muted"},"Выберите документы, относящиеся к одному должнику или делу. Максимум 100 за запуск. Модель обрабатывает их последовательно; выводы сохраняются в пачке и не меняют карточки."),
+      errors.map(e=>errBox(e.name+": "+e.error)),rows,
+      h("div",{class:"row mt"},model,h("button",{class:"btn btn-p",disabled:!models.length,onclick:async(e)=>{
+        if(!chosen.size||chosen.size>100){output.replaceChildren(errBox("Выберите от 1 до 100 документов"));return;}
+        e.target.disabled=true;
+        try {
+          const j=await api("batch/"+b.id+"/ai",{indices:[...chosen],model:model.value});
+          output.replaceChildren(h("p",null,"Анализ выполняется последовательно. Прогресс — в верхней части экрана."));
+          const r=await watchJob(j.id);
+          await draw(r.result?.errors|| (r.error?[{name:"Анализ",error:r.error}]:[]));
+        }catch(e){output.replaceChildren(errBox(e.message));}
+        finally{e.target.disabled=false}
+      }},"Анализировать"),h("button",{class:"btn",onclick:show},"Показать выводы")),output);
+    if(!models.length)panel.prepend(h("p",null,"Локальная модель не установлена или Ollama не запущен."));
+    if(chosen.size)await show();
+  }
+  try{await draw()}catch(e){panel.replaceChildren(errBox(e.message))}
 }
 async function Interest() {
   const field=(label,attrs={})=>{const i=h("input",{class:"fld",...attrs});return [h("label",null,h("div",{class:"small muted"},label),i),i]};
