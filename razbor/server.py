@@ -482,7 +482,12 @@ class Handler(BaseHTTPRequestHandler):
                               verified_through=date.fromisoformat(d["verified_through"]))
                 else:
                     kw["fixed_rate"] = d["rate"]
-                return self._json(interest.calculate(d["principal"], start, end, **kw))
+                result = interest.calculate(d["principal"], start, end, **kw)
+                if d.get("dossier_id") is not None:
+                    if type(d["dossier_id"]) is not int:
+                        raise ValueError("Неверное досье")
+                    result["saved_id"] = dossiers.save_calculation(st, d["dossier_id"], d, result)
+                return self._json(result)
             except (ValueError, KeyError, TypeError, ArithmeticError) as e:
                 return self._err(400, "Проверьте параметры расчёта: " + str(e))
 
