@@ -33,6 +33,8 @@ def attach(store, batch, indices, title="", dossier_id=None):
     selected=[items.get(i) for i in dict.fromkeys(indices)]
     if any(not i or not i.sha or not i.fields or i.status=="error" for i in selected):
         raise ValueError("Выберите успешно прочитанные документы")
+    if not isinstance(title,str) or (dossier_id is not None and type(dossier_id) is not int):
+        raise ValueError("Неверные реквизиты досье")
     title=title.strip()
     if dossier_id is None and not 1<=len(title)<=200:
         raise ValueError("Введите название досье")
@@ -42,6 +44,7 @@ def attach(store, batch, indices, title="", dossier_id=None):
                 (title,datetime.now().isoformat(timespec="seconds"))).lastrowid
         elif not c.execute("SELECT id FROM court_dossiers WHERE id=?",(dossier_id,)).fetchone():
             raise ValueError("Досье не найдено")
+        added=0
         for i in selected:
             data={"name":i.name,"batch":batch.id,"idx":i.idx,"doc_key":i.doc_key,
                   "doc_label":i.doc_label,"date":_date(i.fields),"case":_field(i.fields,"Номер дела"),
@@ -53,8 +56,10 @@ def attach(store, batch, indices, title="", dossier_id=None):
                     "SELECT data FROM court_dossier_docs WHERE dossier_id=?",(dossier_id,))]
                 if i.text_hash in hashes:
                     continue
-            c.execute("INSERT OR IGNORE INTO court_dossier_docs(dossier_id,sha,data) VALUES(?,?,?)",
-                      (dossier_id,i.sha,json.dumps(data,ensure_ascii=False)))
+            added+=c.execute("INSERT OR IGNORE INTO court_dossier_docs(dossier_id,sha,data) VALUES(?,?,?)",
+                      (dossier_id,i.sha,json.dumps(data,ensure_ascii=False))).rowcount
+        if added:
+            c.execute("UPDATE court_dossiers SET reviewed_doc=NULL,review_note='' WHERE id=?",(dossier_id,))
     return dossier_id
 
 def detail(store, did):
