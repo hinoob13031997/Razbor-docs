@@ -93,8 +93,19 @@ def analyze(rr: ReadResult, custom: list[CustomField] | None = None) -> Analysis
     a.title = C.title_detail(doc.head)
     a.fields = F.extract(doc, cl.key, cl.group)
     if cl.group in (C.G_COURT, C.G_BANKR):
-        from .court_review import extract_review
+        from .court_review import extract_review, correct_decision_header
         a.fields.update(extract_review(doc))
+        if cl.key in ("decision", "appeal", "cassation"):
+            correct_decision_header(doc, a.fields)
+            # Исторические суммы из мотивировки не являются присуждённым долгом.
+            old = a.fields.pop("Сумма основная", None)
+            if old is not None:
+                old.note = "сумма из текста, не подтверждённый размер взыскания"
+                a.fields["Сумма из текста (не итог взыскания)"] = old
+            fee = a.fields.pop("Госпошлина", None)
+            if fee is not None:
+                fee.note = "сумма из текста, проверить резолютивную часть"
+                a.fields["Госпошлина (упоминание)"] = fee
     for name, hit in a.fields.items():
         a.pages[name] = doc.page_of(hit.pos)
         a.snippets[name] = doc.snippet(hit.pos, hit.end)
@@ -140,6 +151,10 @@ def review_reasons(rr: ReadResult, a: Analysis, ocr_warn_below: float = 70.0) ->
         reasons.append("вид документа не определён")
     elif not any(k in a.fields for k in KEY_FIELDS):
         reasons.append("не найдено ни одного ключевого поля")
+    if a.doc_key in ("decision", "appeal", "cassation"):
+        reasons.append("Судебный акт: проверьте резолютивную часть, суммы и действующий судебный акт")
+        if "Дата документа" not in a.fields:
+            reasons.append("Дата судебного акта не установлена по шапке")
     s = a.fields.get("Сумма основная")
     if s is not None and "максимуму" in s.note:
         reasons.append("сумма выбрана по максимуму, проверьте")
