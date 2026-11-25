@@ -540,8 +540,11 @@ class Handler(BaseHTTPRequestHandler):
                 if d.get("mode") == "variable":
                     kw.update(rates=[(date.fromisoformat(x["date"]), x["rate"]) for x in d["rates"]],
                               verified_through=date.fromisoformat(d["verified_through"]))
-                else:
+                elif d.get("mode") in ("fixed", "daily", None):
                     kw["fixed_rate"] = d["rate"]
+                    kw["daily_rate"] = d.get("mode") == "daily"
+                else:
+                    raise ValueError("Неизвестный тип ставки")
                 result = interest.calculate(d["principal"], start, end, **kw)
                 if d.get("dossier_id") is not None:
                     if type(d["dossier_id"]) is not int:
