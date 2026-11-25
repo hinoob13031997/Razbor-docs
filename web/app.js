@@ -124,6 +124,7 @@ const NAV = [
   ["#/deadlines", "Сроки", "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "urgent"],
   ["#/ip", "Исполнительные производства", "M5 4h10l4 4v12H5zM14 4v5h5"],
   ["#/templates", "Шаблоны документов", "M6 3h9l4 4v14H6zM9 12h7M9 16h7"],
+  ["#/interest", "Калькулятор процентов", "M5 3h14v18H5zM8 7h8M8 11h2m4 0h2M8 15h2m4 0h2"],
   ["#/settings", "Настройки", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM4 12h2m12 0h2M12 4v2m0 12v2"],
 ];
 function renderNav(active, counts) {
@@ -163,7 +164,7 @@ async function route() {
   try {
     const sum = await api("summary");
     renderNav(path === "#/" || path === "#" ? "#/" : path, { urgent: sum.urgent });
-    const screens = { "": Dash, portfolio: Portfolio, batch: Batch, card: Card, deadlines: Deadlines, ip: Ip, templates: Templates, tpl: Tpl, settings: Settings, folders: Folders };
+    const screens = { "": Dash, portfolio: Portfolio, batch: Batch, card: Card, deadlines: Deadlines, ip: Ip, templates: Templates, tpl: Tpl, settings: Settings, folders: Folders, interest: Interest };
     const fn = screens[parts[0] || ""] || Dash;
     const node = await fn(parts.slice(1), params, sum);
     if (tok === navToken) view.replaceChildren(node);
@@ -578,6 +579,7 @@ async function BatchView(id) {
               det.firstChild.firstChild.replaceChildren(...r.fields.filter((f) => f.name !== "Что это за документ").map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.note && /проверить/.test(f.note) ? h("span", { class: "small", style: "color:#7C4300" }, " (" + f.note + ")") : null, f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
             }
           } }, "Что найдено") : null,
+          h("button", { class: "btn btn-s", onclick: () => aiDialog(id, it.idx, it.name, !it.written || !!b.source) }, "ИИ-анализ"),
           pickable && !it.skipped ? h("button", { class: "btn btn-s", onclick: () => pickContract(b, it) }, it.chosen != null ? "Другой договор" : "Выбрать договор") : null,
           !it.written && it.status !== "seen" ? h("button", { class: "btn btn-s", onclick: async () => { await api("batch/" + id + "/skip", { idx: it.idx, skip: !it.skipped }); load(); } }, it.skipped ? "Вернуть" : "Пропустить") : null)));
     return [rowMain, det];
@@ -729,6 +731,78 @@ async function Tpl(parts) {
 }
 
 // ------------------------------------------------------------------ Настройки
+const AI_LABELS = {court:"Суд",case_number:"Номер дела",act_date:"Дата акта",act_type:"Вид акта",
+  prior_act_reference:"Связанный судебный акт",disposition:"Резолютивная часть",claim:"Требования",
+  party_argument:"Доводы стороны",court_finding:"Вывод суда",award:"Присуждённое",
+  interest_rule:"Условия процентов",effective_date:"Вступление в силу",payment:"Платёж",ambiguity:"Неясность"};
+async function aiDialog(id, idx, name, canRead) {
+  const panel = h("div", null, "Проверяю доступность локальной модели…");
+  openModal([h("h2", null, name), panel, h("button", {class:"btn mt", onclick:closeModal}, "Закрыть")]);
+  async function draw() {
+    const data = await api("batch/"+id+"/item/"+idx);
+    const r = data.ai_analysis || {};
+    const status = await api("ai-status");
+    const models = status.models.filter(x=>["qwen3:4b","qwen3:8b"].includes(x));
+    const select = h("select",{class:"fld"}, models.map(x=>h("option",{value:x},x)));
+    panel.replaceChildren(
+      h("p",{class:"small muted"},"ИИ предлагает выводы, но не изменяет карточки и не заменяет юридическую проверку. Перед запуском отключите облачные функции Ollama и его внешнюю сеть."),
+      models.length ? h("div",{class:"row"},select,h("button",{class:"btn btn-p",disabled:!canRead,onclick:async(e)=>{
+        e.target.disabled=true;
+        try{
+          const j=await api("batch/"+id+"/ai",{idx,model:select.value});
+          panel.replaceChildren(h("p",null,"Выполняется локальный анализ. Прогресс и остановка — в верхней части экрана."));
+          const result=await watchJob(j.id);
+          if(result.state==="error") panel.replaceChildren(errBox(result.error),h("button",{class:"btn",onclick:draw},"Назад"));
+          else await draw();
+        }catch(e){panel.replaceChildren(errBox(e.message),h("button",{class:"btn",onclick:draw},"Назад"))}
+      }},"Запустить анализ")):h("p",null,"Не найдена локальная модель. Установите Ollama и выполните ollama pull qwen3:4b."),
+      !canRead?h("p",{class:"small muted"},"Исходная загруженная копия после записи в карточку может быть удалена. Сохранённый анализ доступен ниже."):null,
+      r.model?h("div",{class:"mt"},h("b",null,"Сохранённый анализ · "+r.model),
+        h("p",{class:"small muted"},"Страниц: "+r.pages_read+" из "+r.pages+". Отклонено цитат: "+r.rejected+"."),
+        (r.warnings||[]).map(w=>h("p",{class:"err small"},w)),
+        (r.findings||[]).length?(r.findings||[]).map(f=>h("div",{class:"card mb"},
+          h("b",null,(AI_LABELS[f.kind]||f.kind)+" · стр. "+f.page),h("p",null,f.value),
+          h("blockquote",{class:"small muted"},f.quote))):h("p",null,"Подтверждаемые цитатами сведения не найдены.")):null);
+  }
+  try {await draw()} catch(e){panel.replaceChildren(errBox(e.message))}
+}
+async function Interest() {
+  const field=(label,attrs={})=>{const i=h("input",{class:"fld",...attrs});return [h("label",null,h("div",{class:"small muted"},label),i),i]};
+  const [lp,p]=field("База начисления, ₽",{type:"number",min:0,step:"0.01"});
+  const [ls,start]=field("Начало (включительно)",{type:"date"});
+  const [le,end]=field("Конец (включительно)",{type:"date"});
+  const [lr,rate]=field("Ставка годовых, %",{type:"number",min:0,step:"any"});
+  const [lv,verified]=field("Ставки проверены по дату",{type:"date"});
+  const mode=h("select",{class:"fld"},h("option",{value:"fixed"},"Фиксированная ставка"),h("option",{value:"variable"},"Переменная ставка"));
+  const rates=h("textarea",{class:"fld",rows:4,placeholder:"2024-01-01;16"});
+  const payments=h("textarea",{class:"fld",rows:4,placeholder:"2025-02-01;10000"});
+  const variable=h("div",{hidden:true},lv,h("p",{class:"small muted"},"История ставок: дата начала действия; процент, одна строка на ставку."),rates);
+  mode.addEventListener("change",()=>{variable.hidden=mode.value!=="variable";lr.hidden=mode.value==="variable"});
+  const result=h("div",{class:"mt"});
+  const parse=(value,key)=>value.split(/\r?\n/).filter(x=>x.trim()).map(x=>{
+    const [day,v,...rest]=x.split(";").map(y=>y.trim());
+    if(!day||!v||rest.length)throw new Error("Строка должна иметь формат дата;значение");
+    return {date:day,[key]:v.replace(",",".")};
+  });
+  const calculate=h("button",{class:"btn btn-p",onclick:async()=>{
+    result.replaceChildren();
+    try{
+      if(!p.value||!start.value||!end.value|| (mode.value==="fixed"&&!rate.value)) throw new Error("Заполните обязательные поля");
+      const r=await api("interest",{principal:p.value,start:start.value,end:end.value,mode:mode.value,rate:rate.value,
+        verified_through:verified.value,rates:parse(rates.value,"rate"),payments:parse(payments.value,"amount")});
+      result.replaceChildren(h("h2",null,"Начислено: "+money(r.interest)),h("p",null,"Остаток базы: "+money(r.remaining_principal)),
+        h("div",{class:"scroll"},h("table",{class:"tbl"},
+          h("thead",null,h("tr",null,["Начало","Конец","Дней","База","Ставка %","Дней в году","Проценты"].map(x=>h("th",null,x)))),
+          h("tbody",null,r.segments.map(x=>h("tr",null,[fd(x.start),fd(x.end),x.days,money(x.base),x.rate,x.denominator,money(x.interest)].map(y=>h("td",null,y))))))),
+        h("p",{class:"small muted"},r.rounding));
+    }catch(e){result.replaceChildren(errBox(e.message))}
+  }},"Рассчитать");
+  return h("div",null,header("Калькулятор процентов","Простые годовые проценты; условия судебного акта необходимо подтвердить."),
+    h("div",{class:"card"},h("div",{class:"grid g2"},lp,ls,le,mode,lr),variable,
+      h("p",{class:"small muted"},"Погашения именно базы начисления (не общая сумма платежа): дата; сумма. База уменьшается со следующего дня. Не учитываются особые ограничения, моратории, капитализация и другие исключения."),
+      payments,h("div",{class:"mt"},calculate),result));
+}
+
 async function Settings() {
   const s = await api("settings");
   const org = h("input", { class: "fld", value: s.org_name, placeholder: "Например: ООО «Коллекторское агентство»", style: "max-width:460px" });
