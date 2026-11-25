@@ -152,3 +152,35 @@ details.card summary{cursor:pointer;font-weight:600}
  .sticky{margin:16px -14px -48px}
  .kv{grid-template-columns:1fr}
 }
+
+/* Разбор судебного документа: сначала смысл, затем доказательства. */
+.reading-host{padding:14px 8px;min-width:0}
+.reading{display:grid;gap:14px;max-width:1400px;margin:auto;white-space:normal;color:var(--ink,#192737)}
+.reading-hero{background:#EDF4F7;border:1px solid #CBDDE5;border-left:4px solid #1B566B;border-radius:12px;padding:18px 22px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+.reading-hero h2{font-size:21px;line-height:1.35;margin:6px 0 0}
+.reading-section{background:#fff;border:1px solid #DDE5ED;border-radius:12px;padding:18px 20px;min-width:0}
+.reading-section h2{font-size:17px;margin-bottom:14px}
+.reading-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:10px 18px}
+.reading-datum{display:flex;flex-direction:column;gap:5px;padding:9px 0;min-width:0;overflow-wrap:anywhere}
+.reading-label{font-size:12px;font-weight:500;color:#667588}
+.reading-datum strong{font-size:15px;font-weight:600}
+.reading-evidence{font-size:12px;color:#576B7E;max-width:100%;overflow-wrap:anywhere}
+.reading-evidence summary,.reading-section>summary,.reading-historical summary,.name-compact summary{cursor:pointer;color:#1B566B;font-weight:600}
+.reading-evidence p{margin:7px 0;white-space:pre-wrap;line-height:1.5;max-width:60ch}
+.reading-total{border-bottom:1px solid #DDE5ED;padding:4px 0 14px;margin-bottom:12px}
+.reading-total strong{display:block;font-size:23px;margin:5px 0;font-weight:650}
+.reading-total p{margin:4px 0}
+.reading-money td{vertical-align:top;white-space:normal}
+.reading-money td:nth-child(1){min-width:135px}
+.reading-money td:nth-child(2){min-width:120px}
+.reading-amount{font-size:17px;font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap!important}
+.reading-historical{margin-top:15px;padding:12px;border-radius:8px;background:#F3F6F8}
+.reading-clause{padding:12px 14px;background:#F6F9FA;border-radius:8px;margin-bottom:10px;white-space:pre-wrap;overflow-wrap:anywhere}
+.reading-clause p{margin:0 0 8px;line-height:1.6}
+.reading-actions{margin:0;padding-left:23px}
+.reading-actions li{margin:7px 0;line-height:1.5}
+.reading-text{white-space:pre-wrap;line-height:1.7;max-height:520px;overflow:auto;padding:14px 0;overflow-wrap:anywhere}
+.name-compact{margin-top:8px;font-size:12px;max-width:560px}
+.name-compact summary{color:#7C4300}
+.reading-section[open] .reading-grid{margin-top:12px}
+@media(max-width:860px){.reading-section{padding:14px}.reading-host{padding:6px 0}.reading-hero{padding:14px}.reading-grid{grid-template-columns:1fr}.reading-hero h2{font-size:18px}}
