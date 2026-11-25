@@ -22,6 +22,13 @@ class InterestTest(unittest.TestCase):
                       verified_through=date(2024,1,2))
         self.assertEqual(r["interest"], "300.00")
 
+    def test_daily_penalty(self):
+        r = calculate(100000, date(2025,1,1), date(2025,1,10),
+                      fixed_rate="0.15",daily_rate=True,
+                      principal_payments=[(date(2025,1,5),20000)])
+        self.assertEqual(r["interest"],"1350.00")
+        self.assertEqual(r["rate_unit"],"day")
+
     def test_missing_coverage(self):
         with self.assertRaises(ValueError):
             calculate(100, date(2025,1,1), date(2025,1,2),
