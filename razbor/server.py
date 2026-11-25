@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import batch as B
-from . import crm, folders, matcher, rules, templates
+from . import crm, folders, matcher, rules, templates, local_ai, interest
 from .actions import next_actions
 from .paths import _bundle_dir, app_dir
 from .store import Store
@@ -442,6 +442,29 @@ class Handler(BaseHTTPRequestHandler):
         head = parts[0]
         today = date.today()
 
+        if head == "ai-status" and method == "GET":
+            try:
+                return self._json({"models": local_ai.installed_models(), "available": True})
+            except Exception:
+                return self._json({"models": [], "available": False})
+
+        if head == "interest" and method == "POST":
+            try:
+                d = self._jbody()
+                start, end = date.fromisoformat(d["start"]), date.fromisoformat(d["end"])
+                if (end - start).days > 36525:
+                    raise ValueError("Период расчёта не должен превышать 100 лет")
+                payments = [(date.fromisoformat(x["date"]), x["amount"]) for x in d.get("payments", [])]
+                kw = {"principal_payments": payments}
+                if d.get("mode") == "variable":
+                    kw.update(rates=[(date.fromisoformat(x["date"]), x["rate"]) for x in d["rates"]],
+                              verified_through=date.fromisoformat(d["verified_through"]))
+                else:
+                    kw["fixed_rate"] = d["rate"]
+                return self._json(interest.calculate(d["principal"], start, end, **kw))
+            except (ValueError, KeyError, TypeError, ArithmeticError) as e:
+                return self._err(400, "Проверьте параметры расчёта: " + str(e))
+
         if head == "ping":
             ctx.last_ping, ctx.seen_ping = time.time(), True
             return self._json({"ok": True, "busy": ctx.busy()})
@@ -591,6 +614,38 @@ class Handler(BaseHTTPRequestHandler):
                     return {"batch": b.id, "counts": b.counts()}
                 ctx.run_job(job, run)
                 return self._json(job.info())
+            if sub == "ai" and method == "POST":
+                d = self._jbody()
+                it = next((i for i in b.items if i.idx == d.get("idx")), None)
+                model = d.get("model", "qwen3:4b")
+                if model not in ("qwen3:4b", "qwen3:8b"):
+                    return self._err(400, "Выберите локальную модель 4B или 8B")
+                if not it or not os.path.isfile(it.path) or not it.sha:
+                    return self._err(404, "Исходный документ недоступен")
+                with ctx.lock:
+                    if ctx.busy() or b.state == "reading":
+                        return self._err(409, "Сейчас выполняется другая задача")
+                    def analyze_job(j):
+                        from .reader import Cancelled, file_sha256
+                        if file_sha256(it.path) != it.sha:
+                            raise ValueError("Файл изменился: загрузите его заново")
+                        try:
+                            result = local_ai.analyze_file(it.path, model, j.cancel,
+                                lambda n, t: (setattr(j, "done", n), setattr(j, "total", t)))
+                        except Cancelled:
+                            raise InterruptedError("Остановлено")
+                        if j.cancel.is_set():
+                            raise InterruptedError("Остановлено")
+                        if file_sha256(it.path) != it.sha:
+                            raise ValueError("Файл изменился во время анализа")
+                        with ctx.lock:
+                            it.ai_analysis = result
+                            b.save(str(ctx.batches))
+                        return {"batch": b.id, "idx": it.idx}
+                    job = ctx.run_job(Job("ai", "Локальный ИИ: анализ документа"), analyze_job)
+                    return self._json(job.info())
+            if sub in ("pick", "skip", "write") and any(j.kind == "ai" and j.state == "running" for j in ctx.jobs.values()):
+                return self._err(409, "Дождитесь завершения анализа ИИ")
             if sub in ("pick", "skip", "write") and b.state == "reading":
                 return self._err(409, "Папка ещё читается. Подтверждать можно после окончания чтения.")
             if sub == "pick" and method == "POST":
@@ -626,7 +681,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not it:
                     return self._err(404, "Документ не найден")
                 return self._json({"fields": it.fields, "facts": it.facts, "reasons": it.reasons,
-                                   "event": it.event, "name": it.name})
+                                   "event": it.event, "name": it.name, "ai_analysis": it.ai_analysis})
             if sub == "file" and len(parts) == 4:
                 it = next((i for i in b.items if i.idx == int(parts[3])), None)
                 if not it:
