@@ -139,6 +139,8 @@ def component(clause):
         return "Проценты за пользование кредитом"
     if re.search(r"основн\w+\s+долг",c) and not re.search(r"процент|неустойк",c):
         return "Основной долг"
+    if re.search(r"задолженност\w*\s+по\s+(?:кредитн\w*\s+договор\w*|договор\w*\s+займ\w*)",c) and not re.search(r"процент|неустойк|основн\w*\s+долг",c):
+        return "Задолженность по договору"
     return None
 
 def structured_awards(tail,pos):
@@ -155,7 +157,7 @@ def structured_awards(tail,pos):
         part=m.group()
         shift=pos+m.start()
         # Судебные расходы часто стоят в конце последнего пункта после «а также».
-        split=re.search(r"(?i)[,]\s*а\s+также\s+(?=\d)",part)
+        split=re.search(r"(?i)[,]\s*а\s+также\s+(?=\d|расход)",part)
         rest=part[split.end():] if split else ""
         body=part[:split.start()] if split else part
         label=component(body)
@@ -192,7 +194,10 @@ def structured_awards(tail,pos):
             if not EXPENSE.search(body):
                 uncertain=True
             else:
-                rest=body+("; "+rest if rest else "")
+                if not split:
+                    rest=body
+                else:
+                    uncertain=True
         if rest:
             shift_rest=shift+split.end() if split else shift
             aa=find_amounts(rest)
