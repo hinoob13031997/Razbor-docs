@@ -67,6 +67,11 @@ class DossierTest(unittest.TestCase):
                 dossiers.add_payments(st,did,[dict(rows[0],principal="101")])
             with self.assertRaises(ValueError):
                 dossiers.add_payments(st,did,[dict(rows[0],total="110")])
+            dossiers.review(st,did,z,"Проверено")
+            dossiers.save_calculation(st,did,{"principal":"100"},{"interest":"1.00"})
+            self.assertFalse(dossiers.detail(st,did)["calculations"][0]["needs_review"])
+            dossiers.allocate_payment(st,did,dossiers.detail(st,did)["payments"][1]["id"],"50")
+            self.assertTrue(dossiers.detail(st,did)["calculations"][0]["needs_review"])
             st.conn().close()
 
     def test_review(self):
@@ -109,6 +114,71 @@ class DossierTest(unittest.TestCase):
         self.assertEqual(len([k for k in r if k.startswith("Начисление до исполнения")]),3)
         self.assertIn("100 000",r["Начисление до исполнения"].value)
         self.assertIn("в день",r["Начисление до исполнения 2"].value)
+
+    def test_refusal_before_award_and_total(self):
+        from decimal import Decimal
+        r=extract_review(Doc(["РЕШИЛ:\nВ удовлетворении требования о процентах на 900 рублей отказать. Взыскать основной долг 1000 рублей; госпошлину 50 рублей; итого 1050 рублей."]))
+        self.assertEqual(r["Итого распознанных фиксированных взысканий"].value,Decimal("1050"))
+        self.assertEqual(r["Указанный судом общий итог 1"].value,Decimal("1050"))
+        self.assertNotIn(Decimal("900"),[v.value for k,v in r.items() if k.startswith("Фиксированное взыскание")])
+
+    def test_subtotal_conflict_and_nested_breakdown(self):
+        for txt in [
+            "Взыскать основной долг 1000 рублей; госпошлину 50 рублей; итого 1049 рублей.",
+            "Взыскать задолженность по кредитному договору 1000 рублей, в том числе основной долг 900 рублей и проценты 100 рублей.",
+            "Взыскать основной долг 1000 рублей; иные затраты 50 рублей.",
+        ]:
+            with self.subTest(txt=txt):
+                r=extract_review(Doc(["РЕШИЛ:\n"+txt]))
+                self.assertNotIn("Итого распознанных фиксированных взысканий",r)
+                self.assertIn("Проверка: неполный разбор сумм",r)
+
+    def test_special_awards_and_multiple_acts(self):
+        for txt in [
+            "Взыскать солидарно с ответчиков основной долг 1000 рублей.",
+            "Изменить решение, взыскать основной долг 1000 рублей.",
+            "Взыскать с каждого ответчика основной долг 500 рублей.",
+            "Взыскать основной долг 1000 рублей по встречному иску.",
+            "Взыскать с А. в пользу ООО «А» основной долг 1000 рублей. Взыскать с Б. в пользу ООО «Б» основной долг 1000 рублей.",
+        ]:
+            with self.subTest(txt=txt):
+                r=extract_review(Doc(["РЕШИЛ:\n"+txt]))
+                self.assertNotIn("Итого распознанных фиксированных взысканий",r)
+                self.assertTrue(any(k.startswith("Проверка: ") for k in r))
+        r=extract_review(Doc(["РЕШИЛ:\nВзыскать основной долг 100 рублей.","РЕШИЛ:\nВзыскать основной долг 200 рублей."]))
+        self.assertIn("Проверка: несколько резолютивных частей",r)
+        self.assertNotIn("Итого распознанных фиксированных взысканий",r)
+
+    def test_motive_and_parties(self):
+        from decimal import Decimal
+        txt=("По иску ООО «Альфа» к ответчику. Суд приходит к выводу о взыскании задолженности в общей сумме 1000,01 рубля.\n"
+             "РЕШИЛ:\nВзыскать с ответчика в пользу ООО «Бета» основной долг 1000 рублей; госпошлину 50 рублей.")
+        r=extract_review(Doc([txt]))
+        self.assertIn("Проверка: различаются участники",r)
+        self.assertIn("Проверка: возможное расхождение сумм",r)
+        self.assertEqual(r["Получатель взыскания 1"].value,"ООО «Бета»")
+        self.assertEqual(r["Итого распознанных фиксированных взысканий"].value,Decimal("1050"))
+
+    def test_incomplete_pages(self):
+        from razbor.reader import PageText, ReadResult
+        from razbor.analyze import analyze, review_reasons
+        rr=ReadResult(pages=[PageText(1,"РЕШЕНИЕ\n1 января 2026 года\nТестовый районный суд\nРЕШИЛ:\nВзыскать основной долг 1000 рублей.","text"),PageText(2,"","empty")],page_count=2)
+        a=analyze(rr)
+        self.assertEqual(a.doc_key,"decision")
+        self.assertNotIn("Итого распознанных фиксированных взысканий",a.fields)
+        self.assertTrue(any("Не все страницы" in x for x in review_reasons(rr,a)))
+
+    def test_succession_refusal(self):
+        from razbor.reader import PageText, ReadResult
+        from razbor.analyze import analyze
+        from razbor.matcher import facts_from
+        txt=("ОПРЕДЕЛЕНИЕ\n14 июня 2026 года\nТестовый районный суд рассмотрел заявление ООО «Бета» о процессуальном правопреемстве.\n"
+             "Заявитель просит заменить взыскателя ООО «Альфа» на ООО «Бета».\nОПРЕДЕЛИЛ:\nВ удовлетворении заявления отказать.")
+        a=analyze(ReadResult(pages=[PageText(1,txt,"text")],page_count=1))
+        self.assertEqual(a.doc_key,"succession")
+        self.assertNotIn("На кого заменили",a.fields)
+        self.assertIn("Проверка: правопреемство",a.fields)
+        self.assertNotIn("new_creditor",facts_from(a))
 
     def test_classification(self):
         self.assertEqual(classify.classify("АПЕЛЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ\nСудебная коллегия рассмотрела жалобу.").key,"appeal")

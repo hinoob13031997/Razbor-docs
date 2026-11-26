@@ -297,18 +297,22 @@ def _role_name(word: str) -> str:
 
 
 def _succession_fields(doc: "Doc", f: dict) -> None:
-    """Определение о замене стороны: кого заменили, на кого, дата уступки.
-
-    Новый взыскатель (или истец) становится «Взыскателем / кредитором»: именно он теперь держит долг.
+    """Фактическая замена стороны — только при явном предписании.
+    Упоминание просьбы или договора уступки не означает удовлетворения заявления.
     """
-    t = doc.text
-    best = None
-    for rx, note in ((REPLACE_FULL, ""), (REPLACE_INIT, "по инициалам, проверить")):
-        for m in rx.finditer(t):
-            best = (m, note)
-            break
-        if best:
-            break
+    from .court_review import OPERATIVE, REFUSAL
+    t=doc.text
+    marks=list(OPERATIVE.finditer(t))
+    best=None
+    if len(marks)==1:
+        start=marks[0].end()
+        tail=t[start:]
+        if not REFUSAL.search(tail):
+            for rx,note in ((REPLACE_FULL,""),(REPLACE_INIT,"по инициалам, проверить")):
+                candidates=[m for m in rx.finditer(t,start) if re.match(r"(?i)заменить\b",m.group())]
+                if len(candidates)==1:
+                    best=(candidates[0],note)
+                    break
     if best:
         m, note = best
         role = _role_name(m.group(1))
@@ -322,8 +326,8 @@ def _succession_fields(doc: "Doc", f: dict) -> None:
         am = APPLICANT.search(t)
         if am:
             new = re.sub(r"\s+", " ", am.group(1)).strip()
-            f["На кого заменили"] = Hit(new, am.start(1), am.end(1), "по заявлению, проверить")
-            f["Взыскатель / кредитор"] = Hit(new, am.start(1), am.end(1), "по заявлению о правопреемстве, проверить")
+            f["Заявитель о правопреемстве"] = Hit(new, am.start(1), am.end(1), "по заявлению, не установленный правопреемник")
+        f["Проверка: правопреемство"]=Hit("Удовлетворение заявления о замене стороны однозначно не установлено. Не менять кредитора или должника автоматически.",0,min(len(t),200),"проверить резолютивную часть")
     for rx in CESSION_DATE:
         cm = rx.search(t)
         if cm:
@@ -505,7 +509,7 @@ def extract(doc: Doc, doc_key: str, group: str) -> dict[str, Hit]:
             if om:
                 f["Взыскатель / кредитор"] = Hit(re.sub(r"\s+", " ", om.group(0)), om.start(), om.end(),
                                                  "первая организация в начале")
-    if doc_key == "succession" or (group == G_COURT and SUCCESSION_HINT.search(doc.head)):
+    if doc_key == "succession":
         _succession_fields(doc, f)
     if doc_key in ("cession", "cession_notice"):
         cd = CEDENT_LABEL.search(t)

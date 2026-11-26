@@ -5,7 +5,7 @@ from datetime import date
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from razbor.interest import calculate
+from razbor.interest import calculate, calculate_many
 from razbor import local_ai
 
 class InterestTest(unittest.TestCase):
@@ -38,6 +38,30 @@ class InterestTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             calculate(100, date(2025,1,1), date(2025,1,2),
                       fixed_rate=10,principal_payments=[(date(2025,1,1),101)])
+
+    def test_annual_denominator_and_payment_timing(self):
+        r=calculate(36000,date(2024,1,1),date(2024,1,2),fixed_rate=10,day_count="360",
+                    payment_timing="before",principal_payments=[(date(2024,1,1),18000)])
+        self.assertEqual(r["interest"],"10.00")
+        self.assertEqual(r["remaining_principal"],"18000.00")
+        self.assertEqual(r["segments"][0]["denominator"],360)
+
+    def test_multiple_independent_accruals(self):
+        rows=[dict(label="Проценты",principal=365000,start="2025-01-01",end="2025-01-02",rate=10),
+              dict(label="Неустойка",principal=100000,start="2025-01-01",end="2025-01-02",rate="0,15",mode="daily"),
+              dict(label="Неустойка по процентам",principal=10000,start="2025-01-01",end="2025-01-02",rate="0.15",mode="daily")]
+        with self.assertRaises(ValueError):
+            calculate_many(rows)
+        r=calculate_many(rows,confirmed=True)
+        self.assertEqual(r["interest"],"530.00")
+        self.assertEqual([x["interest"] for x in r["components"]],["200.00","300.00","30.00"])
+        self.assertNotIn("remaining_principal",r)
+        with self.assertRaises(ValueError):
+            calculate_many([rows[0],rows[0]],confirmed=True)
+
+    def test_invalid_denominator(self):
+        with self.assertRaises(ValueError):
+            calculate(100,date(2025,1,1),date(2025,1,1),fixed_rate=10,day_count="0")
 
 class AITest(unittest.TestCase):
     def test_quote_validation(self):

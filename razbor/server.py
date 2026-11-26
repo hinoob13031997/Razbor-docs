@@ -532,20 +532,8 @@ class Handler(BaseHTTPRequestHandler):
         if head == "interest" and method == "POST":
             try:
                 d = self._jbody()
-                start, end = date.fromisoformat(d["start"]), date.fromisoformat(d["end"])
-                if (end - start).days > 36525:
-                    raise ValueError("Период расчёта не должен превышать 100 лет")
-                payments = [(date.fromisoformat(x["date"]), x["amount"]) for x in d.get("payments", [])]
-                kw = {"principal_payments": payments}
-                if d.get("mode") == "variable":
-                    kw.update(rates=[(date.fromisoformat(x["date"]), x["rate"]) for x in d["rates"]],
-                              verified_through=date.fromisoformat(d["verified_through"]))
-                elif d.get("mode") in ("fixed", "daily", None):
-                    kw["fixed_rate"] = d["rate"]
-                    kw["daily_rate"] = d.get("mode") == "daily"
-                else:
-                    raise ValueError("Неизвестный тип ставки")
-                result = interest.calculate(d["principal"], start, end, **kw)
+                result = (interest.calculate_many(d["components"],confirmed=d.get("confirmed"))
+                          if "components" in d else interest.calculate_input(d))
                 if d.get("dossier_id") is not None:
                     if type(d["dossier_id"]) is not int:
                         raise ValueError("Неверное досье")

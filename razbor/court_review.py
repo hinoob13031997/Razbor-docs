@@ -4,7 +4,7 @@
 """
 import re
 from decimal import Decimal
-from .fields import Hit, CASE_LABELED, CASE_HASH, find_amounts, Doc, COURT_PATTERNS, COURT_TRIM
+from .fields import Hit, CASE_LABELED, CASE_HASH, find_amounts, Doc, COURT_PATTERNS, COURT_TRIM, ORG_QUOTED, ORG_FULL
 from .textutil import find_dates, fmt_money
 
 OPERATIVE = re.compile(r"(?im)(?:^[ \t]*(?:суд(?:ебная коллегия)?[ \t]+)?(?:решил[аи]?|определил[аи]?|постановил[аи]?)(?:[ \t]*:[ \t]*|[ \t]*$)|\bсуд[ \t]+(?:РЕШИЛ|ОПРЕДЕЛИЛ|ПОСТАНОВИЛ)[ \t]*:)")
@@ -84,11 +84,15 @@ def extract_review(doc):
     out = {}
     marks = list(OPERATIVE.finditer(doc.text))
     if not marks:
+        out["Проверка: резолютивная часть"] = Hit("Граница резолютивной части не найдена; суммы из текста не подтверждены.",0,min(len(doc.text),200),"сверить оригинал")
+        return out
+    if len(marks)>1 or len(list(TITLE.finditer(doc.text)))>1:
+        out["Проверка: несколько резолютивных частей"] = Hit("В файле несколько маркеров решения: возможны разные акты либо цитаты предыдущего решения. Разделите документы и проверьте каждый.",0,len(doc.text),"автоматический итог не сформирован")
         return out
     pos = marks[-1].end()
     tail = doc.text[pos:]
     # Не включаем последующие указания о сроке обжалования в резолютивную часть.
-    stop = re.search(r"(?im)^[ \t]*(?:решение|определение|постановление)\s+может\s+быть\s+обжалован", tail)
+    stop = re.search(r"(?im)^[ \t]*(?:решение|определение|постановление)\s+(?:может\s+быть\s+обжалован|вступил\w*\s+в\s+законную\s+силу)|^[ \t]*мотивированн\w+\s+решени\w+\s+изготовлен", tail)
     if stop:
         tail = tail[:stop.start()]
     for label, pattern in RESULTS:
@@ -115,6 +119,7 @@ def extract_review(doc):
     # Сохраняем весь фрагмент, а не только короткое окружение найденной суммы.
     out["Резолютивная часть"]=Hit(tail.strip()[:14000],pos,pos+min(len(tail),14000),"проверить по оригиналу")
     out.update(structured_awards(tail,pos))
+    out.update(cross_checks(doc,tail,pos,out))
     cases = []
     for rx in (CASE_LABELED, CASE_HASH):
         for m in rx.finditer(doc.text):
@@ -126,8 +131,13 @@ def extract_review(doc):
     return out
 
 # Разделяем только явные предписания из резолютивной части, не мотивировку.
-RATE = re.compile(r"(\d{1,3}(?:[.,]\d{1,5})?)\s*%\s*(годовых|за\s+каждый\s+день(?:\s+просрочки)?|в\s+день)",re.I)
-REFUSAL = re.compile(r"(?i)\b(?:в\s+остальной\s+части|отказать|оставить\s+без\s+удовлетворения)")
+RATE = re.compile(r"(\d{1,3}(?:[.,]\d{1,5})?)\s*(?:%|процент\w*)\s*(годовых|(?:за\s+)?каждый\s+день(?:\s+просрочки)?|в\s+день|ежедневно)",re.I)
+REFUSAL = re.compile(r"(?i)\b(?:в\s+остальной\s+части|отказать|оставить\s+без\s+удовлетворения|не\s+подлеж\w*\s+взыскани\w*|не\s+взыскать)")
+AWARD = re.compile(r"(?i)\bвзыскать\b")
+TOTAL_WORD = re.compile(r"(?i)\b(?:итого|всего|общ(?:ая|ей|ую)\s+сумм\w*|в\s+общем\s+размере)\s*(?:к\s+взысканию\s*)?(?:составляет\s*)?[:–—-]?\s*$")
+COMPLEX = re.compile(r"(?i)\b(?:солидарно|субсидиарно|в\s+долевом\s+порядке|в\s+равных\s+долях|с\s+каждого|с\s+каждой|встречн\w*\s+иск\w*|зач[её]т\w*|за\s+вычетом|в\s+пределах\s+стоимости|не\s+более|не\s+свыше|в\s+доход\s+бюджет\w*|рассрочк\w*|отсрочк\w*|обратить\s+взыскание\s+на|в\s+иностранн\w+\s+валют\w*|при\s+условии)")
+MODIFY = re.compile(r"(?i)\b(?:отменить|изменить|исправить\s+описку|разъяснить|дополнить|поворот\s+исполнения)\b")
+AMBIGUOUS_SUM = re.compile(r"(?i)\b(?:в\s+том\s+числе|из\s+них|включая|из\s+которых|либо|или|взамен)\b")
 EXPENSE = re.compile(r"(?i)\bрасход\w*\s+(?:по\s+оплате\s+)?(?:услуг\w*\s+)?представител\w*|\b(?:государственн\w+\s+пошлин\w*|госпошлин\w*)")
 def component(clause):
     c=re.sub(r"\s+"," ",clause.lower())
@@ -141,21 +151,72 @@ def component(clause):
         return "Основной долг"
     if re.search(r"задолженност\w*\s+по\s+(?:кредитн\w*\s+договор\w*|договор\w*\s+займ\w*)",c) and not re.search(r"процент|неустойк|основн\w*\s+долг",c):
         return "Задолженность по договору"
+    if re.search(r"неустойк|штраф|\bпен[яией]",c):
+        return "Неустойка (вид уточнить)"
+    if re.search(r"процент",c) and not re.search(r"основн\w+\s+долг",c):
+        return "Проценты (вид уточнить)"
+    if re.search(r"моральн\w+\s+вред",c):
+        return "Компенсация морального вреда"
+    if not EXPENSE.search(c) and re.search(r"почтов\w+\s+расход|расход\w*\s+на\s+экспертиз|судебн\w+\s+расход",c):
+        return "Судебные расходы (вид уточнить)"
     return None
 
 def structured_awards(tail,pos):
     out={}
-    # Не классифицируем в качестве взыскания суммы из актов отмены/изменения.
-    if not re.search(r"(?i)\bвзыскать\b",tail) or re.search(r"(?i)\b(?:отменить|изменить)\b",tail):
+    # Не переводим отменённые, изменённые, условные или распределённые
+    # предписания в единый итог. Сами суммы и источник остаются доступны.
+    if not AWARD.search(tail):
+        if MODIFY.search(tail) or COMPLEX.search(tail):
+            out["Проверка: особые условия взыскания"]=Hit("Найдено особое предписание суда; проверьте влияние на предыдущие акты и исполнение.",pos,pos+len(tail),"ручная проверка")
         return out
-    refusal=REFUSAL.search(tail)
-    end=refusal.start() if refusal else len(tail)
-    active=tail[:end]
+    debtor_mentions=re.findall(r"(?i)\bвзыскать\s+с\s+([^;\n]{1,150}?)(?=\s+в\s+пользу)",tail)
+    if MODIFY.search(tail) or COMPLEX.search(tail) or len({re.sub(r"\s+"," ",x.lower()).strip() for x in debtor_mentions})>1:
+        out["Проверка: особые условия взыскания"] = Hit(
+            "Изменение акта, солидарность, доли, зачёт, ограничение или иной особый порядок: единый итог не сформирован.",pos,pos+len(tail),"ручная проверка")
+        return out
+    # Начало каждого нового предложения с распорядительным глаголом,
+    # точка с запятой и новая нумерованная строка — границы пунктов.
+    boundaries = re.compile(r";|\.(?=\s+(?:взыскать|отказать|в\s+остальной\s+части|в\s+удовлетворении|исковые\s+требования|решение\s+вступил))|\n(?=\s*\d+[.)]\s+)",re.I)
+    spans=[]
+    last=0
+    for sep in boundaries.finditer(tail):
+        spans.append((last,sep.start()))
+        last=sep.end()
+    spans.append((last,len(tail)))
     fixed=[]
     uncertain=False
-    for m in re.finditer(r"[^;]+",active):
-        part=m.group()
-        shift=pos+m.start()
+    awarded=False
+    explicit_totals=[]
+    for lo,hi in spans:
+        part=tail[lo:hi]
+        shift=pos+lo
+        # «В удовлетворении ... отказать» может стоять до взыскания.
+        # Не считать суммы в отказных пунктах; при смешанном предписании
+        # не угадывать, к какой части относятся суммы.
+        if REFUSAL.search(part):
+            if AWARD.search(part) and find_amounts(part):
+                uncertain=True
+            awarded=False
+            continue
+        if re.match(r"(?is)^\s*(?:\d+[.)]\s*)?(?:признать|обязать|установить|прекратить|оставить|возвратить)\b",part):
+            if find_amounts(part):
+                uncertain=True
+            awarded=False
+            continue
+        if AWARD.search(part):
+            awarded=True
+        if not awarded:
+            continue
+        if AMBIGUOUS_SUM.search(part):
+            uncertain=True
+            continue
+        amounts_all=find_amounts(part)
+        totals_here=[a for a in amounts_all if TOTAL_WORD.search(part[max(0,a.pos-95):a.pos])]
+        if totals_here:
+            explicit_totals.extend((a.value,shift+a.pos,shift+a.end) for a in totals_here)
+            if len(amounts_all)!=len(totals_here):
+                uncertain=True
+            continue
         # Судебные расходы часто стоят в конце последнего пункта после «а также».
         split=re.search(r"(?i)[,]\s*а\s+также\s+(?=\d|расход)",part)
         rest=part[split.end():] if split else ""
@@ -165,10 +226,12 @@ def structured_awards(tail,pos):
         cont=CONTINUING.search(body)
         if cont and INTEREST.search(body):
             n=1+sum(k.startswith("Начисление до исполнения") for k in out)
-            rate=RATE.search(body)
+            rate_matches=list(RATE.finditer(body))
+            rate=rate_matches[0] if len(rate_matches)==1 else None
             dates=find_dates(body)
-            start=re.search(r"(?i)\b(?:период\s+)?с\s*(\d{1,2}[./]\d{1,2}[./]\d{4})",body)
-            start_dates=find_dates(start.group(1)) if start else []
+            start_dates=[(d,a,b) for d,a,b in dates if re.search(r'(?i)\b(?:с|начиная\s+с)\s*[«"“]?\s*$',body[max(0,a-30):a])]
+            if len(start_dates)!=1:
+                start_dates=[]
             basis=re.search(r"(?i)(?:на\s+)?остат\w*\s+основн\w+\s+долг\w*|сумм\w*\s+задолженност\w*\s+по\s+процент",body)
             desc=[label or "Вид начисления уточнить"]
             if rate:
@@ -186,6 +249,8 @@ def structured_awards(tail,pos):
             out["Начисление до исполнения" if n==1 else f"Начисление до исполнения {n}"]=Hit(" · ".join(desc),shift,shift+len(body),"условия и база требуют подтверждения; не включать в фиксированное взыскание")
             if not (label and rate and start_dates and basis):
                 uncertain=True
+        elif label and EXPENSE.search(body) and amounts:
+            uncertain=True
         elif label and len(amounts)==1 and not re.search(r"%|в\s+день|до\s+погашения",body,re.I):
             a=amounts[0]
             fixed.append((label,a.value,shift+a.pos,shift+a.end))
@@ -216,10 +281,65 @@ def structured_awards(tail,pos):
     for n,(label,value,a,b) in enumerate(fixed,1):
         out[f"Фиксированное взыскание {n}: {label}"]=Hit(value,a,b,"предварительно; сверить оригинал")
     # Сумма только распознанных фиксированных позиций, не юридический остаток.
-    if fixed:
+    if explicit_totals:
+        for n,(v,a,b) in enumerate(explicit_totals,1):
+            out[f"Указанный судом общий итог {n}"]=Hit(v,a,b,"не прибавлять к составляющим; проверить охват")
+        if len(explicit_totals)!=1 or (fixed and explicit_totals[0][0]!=sum(r[1] for r in fixed)):
+            uncertain=True
+    if uncertain:
+        out["Проверка: неполный разбор сумм"]=Hit("Есть неоднозначные суммы или условия; распознанные позиции не являются полным итогом взыскания.",pos,pos+len(tail),"ручная проверка")
+    if fixed and not uncertain:
         total=sum((r[1] for r in fixed),Decimal(0))
         out["Итого распознанных фиксированных взысканий"]=Hit(total,fixed[0][2],fixed[-1][3],
-            "неполный итог: есть неразобранные условия или суммы" if uncertain else "предварительный итог распознанных позиций; не остаток задолженности")
+            "предварительный итог распознанных позиций; не остаток задолженности")
+    return out
+
+def cross_checks(doc,tail,pos,fields):
+    """Сравниваем только явно обозначенные роли и итоги, не историю требований."""
+    out={}
+    motive=doc.text[:pos]
+    def orgs(text,role,offset):
+        hits=[]
+        for m in re.finditer(role,text,re.I):
+            block=text[m.end():m.end()+220]
+            # Не захватывать следующую организацию через всё предложение.
+            org=ORG_QUOTED.match(block.lstrip()) or ORG_FULL.match(block.lstrip())
+            if org:
+                start=m.end()+len(block)-len(block.lstrip())+org.start()
+                hits.append((org.group(),offset+start,offset+start+len(org.group())))
+        return hits
+    def norm(s):
+        return re.sub(r"[^а-яa-z0-9]","",s.lower().replace("ё","е"))
+    parties=orgs(motive,r"\bпо\s+иску\s+",0)
+    recipients=orgs(tail,r"\bв\s+пользу\s+",pos)
+    if parties:
+        a=parties[0]
+        out["Истец по тексту акта"]=Hit(*a,"роль по формулировке; проверить")
+    for n,a in enumerate(recipients[:25],1):
+        out[f"Получатель взыскания {n}"]=Hit(*a,"по резолютивной части; не подтверждает текущего кредитора")
+    if parties and recipients and norm(parties[0][0]) not in {norm(a[0]) for a in recipients}:
+        out["Проверка: различаются участники"]=Hit("Истец и получатель взыскания указаны по-разному: проверьте правопреемство, встречный иск или описку.",parties[0][1],recipients[-1][2],"не заменять кредитора автоматически")
+    if parties and len({norm(a[0]) for a in parties})>1:
+        out["Проверка: разные наименования истца"]=Hit("В тексте несколько разных наименований истца. Возможны цитата другого акта, переход права или описка; проверьте роли.",parties[0][1],parties[-1][2],"не подтверждает правопреемство")
+    if len({norm(a[0]) for a in recipients})>1:
+        out["Проверка: несколько получателей"]=Hit("Несколько получателей взыскания: распределите суммы по получателям.",pos,pos+len(tail),"не объединять автоматически")
+        fields.pop("Итого распознанных фиксированных взысканий",None)
+    # Сверяем явный итог задолженности в выводе суда (не цену иска) с
+    # распознанными долговыми позициями, исключив расходы. Это сигнал,
+    # а не доказательство ошибки: охват сумм может различаться.
+    r=re.compile(r"(?i)\b(?:суд\s+приходит\s+к\s+выводу|суд\s+считает\s+необходимым|подлежит\s+взысканию)\b[^;\n]{0,230}?\b(?:в\s+общей\s+сумме|в\s+общем\s+размере|всего|итого)\s*[:–—-]?\s*")
+    debts=[v for k,v in fields.items() if k.startswith("Фиксированное взыскание ") and re.search(r"долг|задолженность|проценты|неустойка",k,re.I)]
+    if debts and "Итого распознанных фиксированных взысканий" in fields:
+        total=sum(x.value for x in debts)
+        for m in r.finditer(motive):
+            fragment=motive[m.end():m.end()+60]
+            aa=find_amounts(fragment)
+            if aa and aa[0].pos<5 and aa[0].value!=total:
+                a=aa[0]
+                out["Проверка: возможное расхождение сумм"]=Hit(
+                    f"В мотивировке указан итог {fmt_money(a.value)} ₽, распознанные долговые позиции резолютивной части — {fmt_money(total)} ₽. Сверьте состав и арифметику.",
+                    m.end()+a.pos,m.end()+a.end,"возможное несовпадение; не исправлять решение самостоятельно")
+                break
     return out
 
 def additional_dates(doc,fields):

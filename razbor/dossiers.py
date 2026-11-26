@@ -1,5 +1,6 @@
 """Локальные судебные досье: ручное объединение актов, без обязательной CRM."""
 import json
+import hashlib
 import re
 import os
 import shutil
@@ -29,6 +30,10 @@ def init_calculations(store):
           id INTEGER PRIMARY KEY,dossier_id INTEGER NOT NULL,created TEXT NOT NULL,
           inputs TEXT NOT NULL,result TEXT NOT NULL,source_sha TEXT)""")
 
+def payment_snapshot(c,did):
+    rows=c.execute("SELECT day,total,principal,reference FROM court_payments WHERE dossier_id=? ORDER BY id",(did,))
+    return hashlib.sha256(json.dumps([tuple(r) for r in rows],ensure_ascii=False).encode()).hexdigest()
+
 def save_calculation(store,did,inputs,result):
     with store.write() as c:
         row=c.execute("SELECT reviewed_doc FROM court_dossiers WHERE id=?",(did,)).fetchone()
@@ -36,7 +41,7 @@ def save_calculation(store,did,inputs,result):
             raise ValueError("Досье не найдено")
         return c.execute("INSERT INTO court_calculations(dossier_id,created,inputs,result,source_sha) VALUES(?,?,?,?,?)",
                          (did,datetime.now().isoformat(timespec="seconds"),
-                          json.dumps(inputs,ensure_ascii=False),json.dumps(result,ensure_ascii=False),row[0])).lastrowid
+                          json.dumps(dict(inputs,payment_snapshot=payment_snapshot(c,did)),ensure_ascii=False),json.dumps(result,ensure_ascii=False),row[0])).lastrowid
 
 def calculations(store,did):
     rows=store.q("SELECT * FROM court_calculations WHERE dossier_id=? ORDER BY id DESC",(did,))
@@ -118,7 +123,11 @@ def detail(store, did):
         x["has_original"] = archive_path(store,x["sha"]) is not None
     links=store.q("SELECT child,parent,relation,note FROM court_links WHERE dossier_id=?",(did,))
     payments=store.q("SELECT id,day,total,principal,reference FROM court_payments WHERE dossier_id=? ORDER BY day,id",(did,))
-    return dict(d,documents=docs,warnings=warnings,calculations=calculations(store,did),links=links,payments=payments)
+    history=calculations(store,did)
+    snapshot=payment_snapshot(store.conn(),did)
+    for calc in history:
+        calc["needs_review"]=(not calc["source_sha"] or calc["source_sha"]!=d["reviewed_doc"] or calc["inputs"].get("payment_snapshot")!=snapshot)
+    return dict(d,documents=docs,warnings=warnings,calculations=history,links=links,payments=payments)
 
 def review(store,did,sha,note):
     if not isinstance(note,str) or len(note)>5000:

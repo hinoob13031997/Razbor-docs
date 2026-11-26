@@ -495,6 +495,9 @@ function readingView(fields,key){
   const result=get("Результат рассмотрения"),operative=get("Резолютивная часть");
   const marks=fields.filter(f=>f.name.startsWith("Признак результата:"));
   const sums=fields.filter(f=>f.name.startsWith("Сумма в резолютивной части"));
+  const checks=fields.filter(f=>f.name.startsWith("Проверка: "));
+  const recipients=fields.filter(f=>f.name.startsWith("Получатель взыскания "));
+  const stated=fields.filter(f=>f.name.startsWith("Указанный судом общий итог "));
   const continuing=fields.filter(f=>f.name.startsWith("Начисление до исполнения"));
   const fixed=fields.filter(f=>f.name.startsWith("Фиксированное взыскание ")), total=get("Итого распознанных фиксированных взысканий");
   const modern=!!operative;
@@ -503,8 +506,10 @@ function readingView(fields,key){
   return h("div",{class:"reading"},
     h("div",{class:"reading-hero"},h("div",null,h("span",{class:"reading-label"},"Результат рассмотрения · предварительно"),h("h2",null,title)),chip("Требуется сверка","amb")),
     !modern?h("div",{class:"banner amb"},h("div",null,h("b",null,"Нет полного извлечённого фрагмента")," Для старого результата или нераспознанной резолютивной части нужно повторить читку оригинала.")):null,
-    section("1. Реквизиты",h("div",{class:"reading-grid"},[["Дата судебного акта",get("Дата документа")],["Мотивированное решение",get("Дата мотивированного решения")],["Сопроводительное письмо",get("Дата сопроводительного письма")],["Номер дела",get("Номер дела")],["Суд",get("Суд")],["Договор",get("Номер договора")],["Должник",get("ФИО")],["Взыскатель",get("Взыскатель / кредитор")],["Вступление в силу",get("Вступил в силу")]].map(([label,f])=>datum(label,f)))),
+    checks.length?h("div",{class:"banner amb"},h("div",null,h("b",null,"Обнаружены обстоятельства для проверки"),checks.map(f=>h("div",null,h("p",null,f.value),evidence(f))))):null,
+    section("1. Реквизиты",h("div",{class:"reading-grid"},[["Дата судебного акта",get("Дата документа")],["Мотивированное решение",get("Дата мотивированного решения")],["Сопроводительное письмо",get("Дата сопроводительного письма")],["Номер дела",get("Номер дела")],["Суд",get("Суд")],["Договор",get("Номер договора")],["Должник",get("ФИО")],["Взыскатель (кандидат)",get("Взыскатель / кредитор")],["Истец по акту",get("Истец по тексту акта")],...recipients.map(f=>[f.name,f]),["Вступление в силу",get("Вступил в силу")]].map(([label,f])=>datum(label,f)))),
     section("2. Денежные суммы",h("div",{class:"reading-total"},h("span",{class:"reading-label"},"Итого распознанных фиксированных взысканий"),h("strong",null,total?total.value+" ₽":"Требует подтверждения"),h("p",{class:"muted small"},total?total.note:"База будущих начислений не является отдельным взысканием. Не складывайте все найденные суммы.")),
+      stated.map(f=>datum(f.name,f)),
       fixed.length?h("div",{class:"scroll"},h("table",{class:"tbl reading-money"},h("thead",null,h("tr",null,["Вид взыскания","Сумма, ₽","Источник"].map(x=>h("th",null,x)))),h("tbody",null,fixed.map(f=>h("tr",null,h("td",null,f.name.replace(/^Фиксированное взыскание \d+: /,"")),h("td",{class:"reading-amount"},f.value),h("td",null,evidence(f))))))):null,
       sums.length?h("details",{class:"reading-historical"},h("summary",null,"Все найденные суммы (включая базы и неподтверждённые)"),h("div",{class:"scroll"},h("table",{class:"tbl reading-money"},h("thead",null,h("tr",null,["Предполагаемое назначение","Сумма, ₽","Источник"].map(x=>h("th",null,x)))),h("tbody",null,sums.map(f=>{let m=f.name.match(/\(([^)]+)\)$/);return h("tr",null,h("td",null,m?m[1]:"Не определено"),h("td",{class:"reading-amount"},f.value),h("td",null,evidence(f)))}))))):h("p",{class:"muted"},"Денежные суммы в резолютивной части не распознаны."),
       historical?h("details",{class:"reading-historical"},h("summary",null,"Другие суммы из текста (не итог взыскания)"),datum("Упомянутая сумма",historical)):null),
@@ -813,7 +818,7 @@ async function Dossiers(parts) {
       h("label",null,"Акт, выбранный сотрудником после проверки",select),h("label",null,"Комментарий и основания",note),
       h("button",{class:"btn btn-p mt",onclick:async()=>{try{await api("dossiers/"+d.id+"/review",{sha:select.value,note:note.value});msg.replaceChildren(h("p",null,"Сохранено"));}catch(e){msg.replaceChildren(errBox(e.message))}}},"Сохранить заключение"),msg),
     dossierLinks(d),dossierCRM(d),dossierPayments(d),
-    h("div",{class:"card mb"},h("h2",null,"История расчётов"),(d.calculations||[]).length?(d.calculations||[]).map(x=>h("div",{style:"padding:8px 0;border-top:1px solid #EBEEF3"},h("b",null,fd(x.created)+" · "+money(x.result.interest)),h("div",{class:"small muted"},fd(x.inputs.start)+" — "+fd(x.inputs.end)+" · база "+money(x.inputs.principal)),h("div",{class:"small muted"},x.source_sha&&x.source_sha===d.reviewed_doc?"Привязан к выбранному акту; платежи и условия проверить":"Требуется сверка с действующим актом"))):h("p",{class:"muted"},"Расчётов пока нет.")),
+    h("div",{class:"card mb"},h("h2",null,"История расчётов"),(d.calculations||[]).length?(d.calculations||[]).map(x=>h("div",{style:"padding:8px 0;border-top:1px solid #EBEEF3"},h("b",null,fd(x.created)+" · "+money(x.result.interest)),h("div",{class:"small muted"},x.inputs.components?x.inputs.components.length+" самостоятельных начислений":fd(x.inputs.start)+" — "+fd(x.inputs.end)+" · база "+money(x.inputs.principal)),h("div",{class:"small muted"},!x.needs_review?"Привязан к выбранному акту; условия проверить":"Требуется повторная сверка акта или платежей"))):h("p",{class:"muted"},"Расчётов пока нет.")),
     h("h2",null,"Хронология"),blocks);
 }
 const RELATIONS={upheld:"Оставляет без изменения",changed:"Изменяет",cancelled:"Отменяет",remanded:"Отменяет и направляет на новое рассмотрение",enforcement:"Исполнение",related:"Связан с актом"};
@@ -884,6 +889,47 @@ function backupPanel(){
   return h("div",{class:"card mb"},h("h2",null,"Резервная копия"),h("p",{class:"small muted"},"Снимок базы, сохранённых оригиналов и результатов чтения. Временные загрузки и подключённые сетевые папки не входят. ZIP содержит персональные данные; храните его в защищённом месте."),
     h("button",{class:"btn",onclick:async(e)=>{e.target.disabled=true;try{const r=await fetch("/api/backup",{method:"POST"});if(!r.ok){const j=await r.json();throw new Error(j.error||"Ошибка резервирования")}const url=URL.createObjectURL(await r.blob());const a=h("a",{href:url,download:"RazborDocs-backup.zip"});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);msg.replaceChildren(h("p",null,"Архив сформирован"))}catch(e){msg.replaceChildren(errBox(e.message))}finally{e.target.disabled=false}}},"Скачать резервную копию"),msg);
 }
+function multiInterestPanel(did){
+  const rows=h("div"),message=h("div",{class:"mt"}),controls=[];
+  const confirmed=h("input",{type:"checkbox"});
+  const clear=()=>{confirmed.checked=false;message.replaceChildren()};
+  const field=(label,attrs={})=>{const i=h("input",{class:"fld",...attrs});i.addEventListener("input",clear);return [h("label",null,h("div",{class:"small muted"},label),i),i]};
+  const add=()=>{
+    if(controls.length>=20)return;
+    const [ll,label]=field("Название начисления",{placeholder:"Например, неустойка по процентам"});
+    const [lp,principal]=field("База, ₽",{type:"number",min:0,step:"0.01"});
+    const [ls,start]=field("Начало включительно",{type:"date"});
+    const [le,end]=field("Конец включительно",{type:"date"});
+    const [lr,rate]=field("Ставка, %",{type:"number",min:0,step:"any"});
+    const mode=h("select",{class:"fld"},h("option",{value:"fixed"},"Годовая"),h("option",{value:"daily"},"Дневная"),h("option",{value:"variable"},"Переменная годовая"));
+    const dc=h("select",{class:"fld"},h("option",{value:"actual"},"Фактические 365/366"),h("option",{value:"365"},"365"),h("option",{value:"366"},"366"),h("option",{value:"360"},"360"));
+    const timing=h("select",{class:"fld"},h("option",{value:"after"},"Со следующего дня"),h("option",{value:"before"},"В день платежа"));
+    const [lv,verified]=field("Ставки проверены по дату",{type:"date"});
+    const rates=h("textarea",{class:"fld",rows:2,placeholder:"2025-01-01;21"});
+    const payments=h("textarea",{class:"fld",rows:2,placeholder:"2025-01-10;10000"});
+    const variable=h("div",{hidden:true},lv,h("p",{class:"small muted"},"История ставок: дата; ставка"),rates);
+    for(const x of [mode,dc,timing,rates,payments])x.addEventListener("input",clear);
+    mode.addEventListener("change",()=>{variable.hidden=mode.value!=="variable";lr.hidden=mode.value==="variable";dc.disabled=mode.value==="daily";if(dc.disabled)dc.value="actual"});
+    const item={label,principal,start,end,rate,mode,dc,timing,verified,rates,payments};
+    const panel=h("div",{class:"card mb"},h("div",{class:"grid g2"},ll,lp,ls,le,h("label",null,"Единица ставки",mode),lr,h("label",null,"Годовой делитель",dc),h("label",null,"Уменьшение базы",timing)),variable,
+      h("div",null,h("p",{class:"small muted"},"Погашения только этой базы (дата; сумма)"),payments),
+      h("button",{class:"btn mt",onclick:()=>{controls.splice(controls.indexOf(item),1);panel.remove();clear()}},"Убрать начисление"));
+    controls.push(item);rows.append(panel);clear();
+  };
+  const parse=(value,key)=>value.split(/\r?\n/).filter(x=>x.trim()).map(x=>{const [date,v,...rest]=x.split(";").map(y=>y.trim());if(!date||!v||rest.length)throw new Error("Формат строки: дата;значение");return {date,[key]:v.replace(",",".")}});
+  add();add();
+  return h("details",{class:"card mt"},h("summary",null,"Несколько начислений одновременно"),
+    h("p",{class:"small muted"},"Введите каждое самостоятельное начисление отдельно. Не переносите общий платёж в каждую строку без распределения. Суммы баз не складываются; особые ограничения проверяются вручную."),rows,
+    h("button",{class:"btn",onclick:add},"Добавить начисление"),
+    h("label",{class:"row mt"},confirmed," Подтверждаю разные основания начислений и распределение платежей"),
+    h("button",{class:"btn btn-p mt",onclick:async(e)=>{e.target.disabled=true;try{
+      const components=controls.map(x=>{if(!x.label.value||!x.principal.value||!x.start.value||!x.end.value||(x.mode.value!=="variable"&&!x.rate.value))throw new Error("Заполните реквизиты каждого начисления");return {label:x.label.value,principal:x.principal.value,start:x.start.value,end:x.end.value,rate:x.rate.value,mode:x.mode.value,day_count:x.dc.value,payment_timing:x.timing.value,rates:x.mode.value==="variable"?parse(x.rates.value,"rate"):[],verified_through:x.verified.value,payments:parse(x.payments.value,"amount")}});
+      const r=await api("interest",{components,confirmed:confirmed.checked,dossier_id:did});
+      message.replaceChildren(h("h2",null,"Сумма начислений: "+money(r.interest)),
+        ...r.components.map(c=>h("details",{class:"card mb"},h("summary",null,c.label+" · "+money(c.interest)),h("p",null,"Остаток этой базы: "+money(c.remaining_principal)),h("div",{class:"scroll"},h("table",{class:"tbl"},h("thead",null,h("tr",null,["Начало","Конец","Дней","База","Ставка","Делитель","Начислено"].map(v=>h("th",null,v)))),h("tbody",null,c.segments.map(q=>h("tr",null,[fd(q.start),fd(q.end),q.days,money(q.base),q.rate,q.denominator,money(q.interest)].map(v=>h("td",null,v))))))))),
+        h("p",{class:"small muted"},r.rounding),r.saved_id?h("p",null,"Расчёт сохранён в досье"):null);
+    }catch(err){message.replaceChildren(errBox(err.message))}finally{e.target.disabled=false}}},did?"Рассчитать и сохранить всё":"Рассчитать всё"),message);
+}
 async function Interest(parts,params) {
   const did=Number(params.get("dossier"))||null;
   const dossier=did?await api("dossiers/"+did):null;
@@ -894,10 +940,12 @@ async function Interest(parts,params) {
   const [lr,rate]=field("Ставка годовых, %",{type:"number",min:0,step:"any"});
   const [lv,verified]=field("Ставки проверены по дату",{type:"date"});
   const mode=h("select",{class:"fld"},h("option",{value:"fixed"},"Фиксированная годовая ставка"),h("option",{value:"daily"},"Фиксированная дневная ставка (неустойка)"),h("option",{value:"variable"},"Переменная годовая ставка"));
+  const dc=h("select",{class:"fld"},h("option",{value:"actual"},"Фактические 365/366"),h("option",{value:"365"},"365"),h("option",{value:"366"},"366"),h("option",{value:"360"},"360"));
+  const timing=h("select",{class:"fld"},h("option",{value:"after"},"Со следующего дня"),h("option",{value:"before"},"В день платежа"));
   const rates=h("textarea",{class:"fld",rows:4,placeholder:"2024-01-01;16"});
   const payments=h("textarea",{class:"fld",rows:4,placeholder:"2025-02-01;10000"});
   const variable=h("div",{hidden:true},lv,h("p",{class:"small muted"},"История ставок: дата начала действия; процент, одна строка на ставку."),rates,h("button",{class:"btn mt",onclick:async()=>{try{const b=await api("rates");if(!b.rows.length)throw new Error("Сначала заполните справочник");rates.value=b.rows.map(x=>x.date+";"+x.rate).join("\n");verified.value=b.verified;result.replaceChildren(h("p",null,"Источник: "+b.source+". Проверьте полноту истории ставок."))}catch(e){result.replaceChildren(errBox(e.message))}}},"Загрузить локальный справочник"));
-  mode.addEventListener("change",()=>{variable.hidden=mode.value!=="variable";lr.hidden=mode.value==="variable";lr.firstChild.textContent=mode.value==="daily"?"Ставка за день, %":"Ставка годовых, %"});
+  mode.addEventListener("change",()=>{variable.hidden=mode.value!=="variable";lr.hidden=mode.value==="variable";lr.firstChild.textContent=mode.value==="daily"?"Ставка за день, %":"Ставка годовых, %";dc.disabled=mode.value==="daily";if(dc.disabled)dc.value="actual"});
   const result=h("div",{class:"mt"});
   const importPayments=dossier?h("button",{class:"btn mt",onclick:()=>{
     if(!start.value||!end.value){result.replaceChildren(errBox("Сначала укажите период расчёта"));return}
@@ -917,7 +965,7 @@ async function Interest(parts,params) {
     try{
       if(!p.value||!start.value||!end.value|| (mode.value!=="variable"&&!rate.value)) throw new Error("Заполните обязательные поля");
       const r=await api("interest",{principal:p.value,start:start.value,end:end.value,mode:mode.value,rate:rate.value,
-        verified_through:verified.value,rates:mode.value==="variable"?parse(rates.value,"rate"):[],payments:parse(payments.value,"amount"),dossier_id:did});
+        day_count:dc.value,payment_timing:timing.value,verified_through:verified.value,rates:mode.value==="variable"?parse(rates.value,"rate"):[],payments:parse(payments.value,"amount"),dossier_id:did});
       result.replaceChildren(h("h2",null,"Начислено: "+money(r.interest)),h("p",null,"Остаток базы: "+money(r.remaining_principal)),
         h("div",{class:"scroll"},h("table",{class:"tbl"},
           h("thead",null,h("tr",null,["Начало","Конец","Дней","База",r.rate_unit==="day"?"Ставка %/день":"Ставка %/год","Делитель","Начислено"].map(x=>h("th",null,x)))),
@@ -926,9 +974,9 @@ async function Interest(parts,params) {
     }catch(e){result.replaceChildren(errBox(e.message))}finally{e.target.disabled=false}
   }},did?"Рассчитать и сохранить":"Рассчитать");
   return h("div",null,dossier?h("a",{class:"link",href:"#/dossiers/"+did},"← "+dossier.title):null,header("Калькулятор процентов","Годовые и дневные ставки; каждое начисление и его базу рассчитывайте отдельно."),
-    h("div",{class:"card"},h("div",{class:"grid g2"},lp,ls,le,mode,lr),variable,
-      h("p",{class:"small muted"},"Погашения именно базы начисления (не общая сумма платежа): дата; сумма. База уменьшается со следующего дня. Не учитываются особые ограничения, моратории, капитализация и другие исключения."),
-      payments,importPayments,h("div",{class:"mt"},calculate),result));
+    h("div",{class:"card"},h("div",{class:"grid g2"},lp,ls,le,mode,lr,h("label",null,"Годовой делитель",dc),h("label",null,"Уменьшение базы",timing)),variable,
+      h("p",{class:"small muted"},"Погашения именно базы начисления (не общая сумма платежа): дата; сумма. Выберите способ учёта платежа и делитель в соответствии с подтверждёнными условиями. Не учитываются особые ограничения, моратории, капитализация и другие исключения."),
+      payments,importPayments,h("div",{class:"mt"},calculate),result),multiInterestPanel(did));
 }
 
 async function Settings() {
