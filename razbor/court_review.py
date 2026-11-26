@@ -176,7 +176,7 @@ def structured_awards(tail,pos):
         return out
     # Начало каждого нового предложения с распорядительным глаголом,
     # точка с запятой и новая нумерованная строка — границы пунктов.
-    boundaries = re.compile(r";|\.(?=\s+(?:взыскать|отказать|в\s+остальной\s+части|в\s+удовлетворении|исковые\s+требования|решение\s+вступил))|\n(?=\s*\d+[.)]\s+)",re.I)
+    boundaries = re.compile(r";|,(?=\s*(?:[|¦]\s*)?(?:процент\w*\s+за\s+пользовани\w*|неустойк\w*\s+за\s+просрочк\w*|пен[яией]\w*\s+за\s+просрочк\w*)\b)|\.(?=\s+(?:взыскать|отказать|в\s+остальной\s+части|в\s+удовлетворении|исковые\s+требования|решение\s+вступил))|\n(?=\s*\d+[.)]\s+)",re.I)
     spans=[]
     last=0
     for sep in boundaries.finditer(tail):
@@ -218,7 +218,7 @@ def structured_awards(tail,pos):
                 uncertain=True
             continue
         # Судебные расходы часто стоят в конце последнего пункта после «а также».
-        split=re.search(r"(?i)[,]\s*а\s+также\s+(?=\d|расход)",part)
+        split=re.search(r"(?i)[,]\s*(?:[|¦]\s*)?а\s+также\s+(?=\d|расход)",part)
         rest=part[split.end():] if split else ""
         body=part[:split.start()] if split else part
         label=component(body)
@@ -310,7 +310,9 @@ def cross_checks(doc,tail,pos,fields):
         return hits
     def norm(s):
         return re.sub(r"[^а-яa-z0-9]","",s.lower().replace("ё","е"))
-    parties=orgs(motive,r"\bпо\s+иску\s+",0)
+    title=TITLE.search(motive)
+    body_start=title.end() if title else 0
+    parties=orgs(motive[body_start:],r"\bпо\s+иску\s+",body_start)
     recipients=orgs(tail,r"\bв\s+пользу\s+",pos)
     if parties:
         a=parties[0]
@@ -324,6 +326,12 @@ def cross_checks(doc,tail,pos,fields):
     if len({norm(a[0]) for a in recipients})>1:
         out["Проверка: несколько получателей"]=Hit("Несколько получателей взыскания: распределите суммы по получателям.",pos,pos+len(tail),"не объединять автоматически")
         fields.pop("Итого распознанных фиксированных взысканий",None)
+    successors=orgs(motive,r"\b(?:право\s+требовани\w*[^.;]{0,400}?)?перешл\w*\s+",0)
+    if successors:
+        for n,x in enumerate(successors[:15],1):
+            out[f"Переход права по тексту {n}"]=Hit(*x,"упоминание перехода права; проверить всю цепочку уступок")
+        if recipients and norm(successors[-1][0]) not in {norm(x[0]) for x in recipients}:
+            out["Проверка: цепочка уступок"]=Hit("Назван получатель права требования, отличный от получателя взыскания. Проверьте последующие уступки и документы о правопреемстве.",successors[-1][1],recipients[-1][2],"различие не доказывает ошибку суда")
     # Сверяем явный итог задолженности в выводе суда (не цену иска) с
     # распознанными долговыми позициями, исключив расходы. Это сигнал,
     # а не доказательство ошибки: охват сумм может различаться.
@@ -340,6 +348,27 @@ def cross_checks(doc,tail,pos,fields):
                     f"В мотивировке указан итог {fmt_money(a.value)} ₽, распознанные долговые позиции резолютивной части — {fmt_money(total)} ₽. Сверьте состав и арифметику.",
                     m.end()+a.pos,m.end()+a.end,"возможное несовпадение; не исправлять решение самостоятельно")
                 break
+        # Сравниваем также явно указанную сумму задолженности за тот же
+        # период, только если период одинаков у всех долговых позиций.
+        periods=[]
+        for v in debts:
+            before=doc.text[max(pos,v.pos-220):v.pos]
+            ds=find_dates(before)
+            if len(ds)>=2 and re.search(r"(?i)за\s+период",before):
+                periods.append(tuple(d for d,_,_ in ds[-2:]))
+        if len(periods)==len(debts) and len(set(periods))==1:
+            rx=re.compile(r"(?i)\bзадолженност\w*[^;]{0,220}?за\s+период[^;]{0,130}?составил\w*\s*")
+            for m in rx.finditer(motive):
+                dates=find_dates(m.group())
+                if len(dates)<2 or tuple(d for d,_,_ in dates[-2:])!=periods[0]:
+                    continue
+                aa=find_amounts(motive[m.end():m.end()+60])
+                if aa and aa[0].pos<5 and aa[0].value!=total:
+                    a=aa[0]
+                    out["Проверка: возможное расхождение сумм"]=Hit(
+                        f"В мотивировке задолженность за тот же период указана {fmt_money(a.value)} ₽, долговые позиции резолютивной части — {fmt_money(total)} ₽. Проверьте охват и арифметику.",
+                        m.end()+a.pos,m.end()+a.end,"возможное несовпадение; не исправлять самостоятельно")
+                    break
     return out
 
 def additional_dates(doc,fields):

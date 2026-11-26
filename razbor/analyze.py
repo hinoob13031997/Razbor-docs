@@ -105,6 +105,10 @@ def analyze(rr: ReadResult, custom: list[CustomField] | None = None) -> Analysis
             if any(p.method in ("empty", "skipped") for p in rr.pages) or rr.pages_read < rr.page_count:
                 a.fields.pop("Итого распознанных фиксированных взысканий",None)
                 a.fields["Проверка: полнота документа"]=F.Hit("Не все страницы прочитаны; итог не сформирован.",0,0,"проверить оригинал")
+            weak=[str(p.index) for p in rr.pages if p.method=="ocr" and p.conf is not None and p.conf<70]
+            if weak:
+                a.fields.pop("Итого распознанных фиксированных взысканий",None)
+                a.fields["Проверка: качество OCR"]=F.Hit("Низкое качество OCR на страницах "+", ".join(weak)+"; итог не сформирован.",0,0,"сверить оригинал")
             if "Проверка: несколько резолютивных частей" in a.fields:
                 for key in ("Дата документа","Вступил в силу","Номер дела"):
                     a.fields.pop(key,None)
