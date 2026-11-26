@@ -124,6 +124,10 @@ const NAV = [
   ["#/deadlines", "Сроки", "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z", "urgent"],
   ["#/ip", "Исполнительные производства", "M5 4h10l4 4v12H5zM14 4v5h5"],
   ["#/templates", "Шаблоны документов", "M6 3h9l4 4v14H6zM9 12h7M9 16h7"],
+  ["#/dossiers", "Судебные досье", "M4 7h6l2 2h8v11H4zM4 4h12"],
+  ["#/interest", "Калькулятор процентов", "M5 3h14v18H5zM8 7h8M8 11h2m4 0h2M8 15h2m4 0h2"],
+  ["#/practice", "Судебная практика", "M4 3h16v18H4zM8 7h8M8 11h8M8 15h5"],
+  ["#/tools", "Справочники и расчёты", "M3 5h18M3 12h18M3 19h18"],
   ["#/settings", "Настройки", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM4 12h2m12 0h2M12 4v2m0 12v2"],
 ];
 function renderNav(active, counts) {
@@ -163,7 +167,7 @@ async function route() {
   try {
     const sum = await api("summary");
     renderNav(path === "#/" || path === "#" ? "#/" : path, { urgent: sum.urgent });
-    const screens = { "": Dash, portfolio: Portfolio, batch: Batch, card: Card, deadlines: Deadlines, ip: Ip, templates: Templates, tpl: Tpl, settings: Settings, folders: Folders };
+    const screens = { "": Dash, portfolio: Portfolio, batch: Batch, card: Card, deadlines: Deadlines, ip: Ip, templates: Templates, tpl: Tpl, settings: Settings, folders: Folders, interest: Interest, dossiers: Dossiers, practice: Practice, tools: AdvancedTools };
     const fn = screens[parts[0] || ""] || Dash;
     const node = await fn(parts.slice(1), params, sum);
     if (tok === navToken) view.replaceChildren(node);
@@ -363,8 +367,7 @@ async function Card(parts) {
   const c = d.contract;
   const tplBtns = [["ip_new", "Заявление об ИП"], ["rtk", "Реестр кредиторов"], ["claim", "Иск"], ["notary", "Запрос нотариусу"]];
   const docBlocks = d.documents.map((x) => {
-    const body = h("div", { hidden: true, class: "fields" },
-      (x.fields || []).map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.note && /проверить/.test(f.note) ? h("span", { class: "small", style: "color:#7C4300" }, " (" + f.note + ")") : null, f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
+    const body = h("div", { hidden:true,class:"reading-host" },readingView(x.fields,x.doc_key));
     return h("div", { style: "border-top:1px solid #EBEEF3;padding:8px 0" },
       h("div", { class: "row sp" },
         h("div", null, h("b", null, x.doc_label || x.name), h("div", { class: "small muted" }, x.name + " · загрузил " + (x.loaded_by || "—") + ", " + fd(x.loaded_at))),
@@ -480,6 +483,41 @@ const GROUPS = [["ok", "Привязаны", "teal"], ["confirm", "Нужно п
 const groupOf = (it) => (it.written ? "written" : it.skipped ? "skip" : it.status === "seen" ? "seen" : it.status === "error" ? "error" : it.chosen != null ? "ok" : it.status === "confirm" ? "confirm" : "nf");
 const bstate = { filter: "ok", limit: 200 };
 
+function isJudgment(key){return ["decision","appeal","cassation"].includes(key)}
+function readingView(fields,key){
+  fields=(fields||[]).filter(f=>f.name!=="Что это за документ");
+  const get=n=>fields.find(f=>f.name===n);
+  const evidence=f=>h("details",{class:"reading-evidence"},h("summary",null,f.page?"Источник · стр. "+f.page:"Источник / примечание"),f.snippet?h("p",null,f.snippet):null,f.note?h("p",{class:"muted"},f.note):null);
+  const datum=(label,f)=>h("div",{class:"reading-datum"},h("span",{class:"reading-label"},label),h("strong",null,f?String(f.value):"Не установлено"),f&&(f.page||f.snippet||f.note)?evidence(f):null);
+  const section=(title,...kids)=>h("section",{class:"reading-section"},h("h2",null,title),kids);
+  const raw=()=>h("details",{class:"reading-section"},h("summary",null,"Все извлечённые поля и источники"),h("div",{class:"reading-grid"},fields.filter(f=>f.name!=="Резолютивная часть").map(f=>datum(f.name,f))));
+  if(!isJudgment(key))return h("div",{class:"reading"},section("Главное",h("div",{class:"reading-grid"},fields.filter(f=>["Дата документа","Номер дела","Номер договора","ФИО","Суд","Взыскатель / кредитор","Сумма основная","Госпошлина","Основание окончания","Номер ИП"].includes(f.name)).map(f=>datum(f.name,f)))),raw());
+  const result=get("Результат рассмотрения"),operative=get("Резолютивная часть");
+  const marks=fields.filter(f=>f.name.startsWith("Признак результата:"));
+  const sums=fields.filter(f=>f.name.startsWith("Сумма в резолютивной части"));
+  const checks=fields.filter(f=>f.name.startsWith("Проверка: "));
+  const recipients=fields.filter(f=>f.name.startsWith("Получатель взыскания "));
+  const stated=fields.filter(f=>f.name.startsWith("Указанный судом общий итог "));
+  const continuing=fields.filter(f=>f.name.startsWith("Начисление до исполнения"));
+  const fixed=fields.filter(f=>f.name.startsWith("Фиксированное взыскание ")), total=get("Итого распознанных фиксированных взысканий");
+  const modern=!!operative;
+  const historical=get("Сумма из текста (не итог взыскания)")||get("Сумма основная");
+  const title= result?String(result.value):marks.some(f=>f.name.endsWith("Взыскание"))&&marks.some(f=>f.name.endsWith("Отказ"))?"Взыскание и отказ — проверить объём":marks.length?marks.map(f=>f.name.replace("Признак результата: ","")).join(" · "):"Результат не установлен";
+  return h("div",{class:"reading"},
+    h("div",{class:"reading-hero"},h("div",null,h("span",{class:"reading-label"},"Результат рассмотрения · предварительно"),h("h2",null,title)),chip("Требуется сверка","amb")),
+    !modern?h("div",{class:"banner amb"},h("div",null,h("b",null,"Нет полного извлечённого фрагмента")," Для старого результата или нераспознанной резолютивной части нужно повторить читку оригинала.")):null,
+    checks.length?h("div",{class:"banner amb"},h("div",null,h("b",null,"Обнаружены обстоятельства для проверки"),checks.map(f=>h("div",null,h("p",null,f.value),evidence(f))))):null,
+    section("1. Реквизиты",h("div",{class:"reading-grid"},[["Дата судебного акта",get("Дата документа")],["Мотивированное решение",get("Дата мотивированного решения")],["Сопроводительное письмо",get("Дата сопроводительного письма")],["Номер дела",get("Номер дела")],["Суд",get("Суд")],["Договор",get("Номер договора")],["Должник",get("ФИО")],["Взыскатель (кандидат)",get("Взыскатель / кредитор")],["Истец по акту",get("Истец по тексту акта")],...recipients.map(f=>[f.name,f]),["Вступление в силу",get("Вступил в силу")]].map(([label,f])=>datum(label,f)))),
+    section("2. Денежные суммы",h("div",{class:"reading-total"},h("span",{class:"reading-label"},"Итого распознанных фиксированных взысканий"),h("strong",null,total?total.value+" ₽":"Требует подтверждения"),h("p",{class:"muted small"},total?total.note:"База будущих начислений не является отдельным взысканием. Не складывайте все найденные суммы.")),
+      stated.map(f=>datum(f.name,f)),
+      fixed.length?h("div",{class:"scroll"},h("table",{class:"tbl reading-money"},h("thead",null,h("tr",null,["Вид взыскания","Сумма, ₽","Источник"].map(x=>h("th",null,x)))),h("tbody",null,fixed.map(f=>h("tr",null,h("td",null,f.name.replace(/^Фиксированное взыскание \d+: /,"")),h("td",{class:"reading-amount"},f.value),h("td",null,evidence(f))))))):null,
+      sums.length?h("details",{class:"reading-historical"},h("summary",null,"Все найденные суммы (включая базы и неподтверждённые)"),h("div",{class:"scroll"},h("table",{class:"tbl reading-money"},h("thead",null,h("tr",null,["Предполагаемое назначение","Сумма, ₽","Источник"].map(x=>h("th",null,x)))),h("tbody",null,sums.map(f=>{let m=f.name.match(/\(([^)]+)\)$/);return h("tr",null,h("td",null,m?m[1]:"Не определено"),h("td",{class:"reading-amount"},f.value),h("td",null,evidence(f)))}))))):h("p",{class:"muted"},"Денежные суммы в резолютивной части не распознаны."),
+      historical?h("details",{class:"reading-historical"},h("summary",null,"Другие суммы из текста (не итог взыскания)"),datum("Упомянутая сумма",historical)):null),
+    section("3. Продолжающиеся начисления",continuing.length?continuing.map(f=>h("div",{class:"reading-clause"},h("p",null,f.value),evidence(f))):h("p",{class:"muted"},"Условия не выделены автоматически. Проверьте резолютивную часть; это не означает, что начислений нет.")),
+    section("4. Что проверить",h("ol",{class:"reading-actions"},["Сверить дату и итог решения с оригиналом.","Разделить взысканные суммы и базу дальнейших процентов; не учитывать отказанные суммы.","При наличии апелляции или кассации собрать судебное досье и установить действующий акт.","Подтвердить условия начисления и платежи перед расчётом."].map(x=>h("li",null,x)))),
+    operative?h("details",{class:"reading-section"},h("summary",null,"Резолютивная часть — извлечённый текст"),h("div",{class:"reading-text"},operative.value),evidence(operative)):null,raw());
+}
+
 async function BatchView(id) {
   const holder = h("div");
   let timer = null;
@@ -518,6 +556,7 @@ async function BatchView(id) {
       h("div", { class: "sticky" },
         h("span", null, b.state === "written" ? "Всё записано." : "К записи: " + toWrite + " " + plural(toWrite, "документ", "документа", "документов") + " в " + contracts + " " + plural(contracts, "договор", "договора", "договоров")),
         h("div", { class: "row" },
+          h("button", {class:"btn", disabled:b.state==="reading", onclick:()=>dossierDialog(b)}, "Собрать судебное досье"),
           h("a", { class: "btn", href: "#/batch" }, "Загрузить ещё"),
           h("button", { class: "btn btn-p", disabled: !toWrite, onclick: async (e) => {
             e.target.disabled = true;
@@ -550,15 +589,15 @@ async function BatchView(id) {
       tbl);
   }
   function itemRows(b, it) {
-    const det = h("tr", { hidden: true }, h("td", { colspan: 4 }, h("div", { class: "fields" }, "Загружаю…")));
+    const det = h("tr", { hidden: true }, h("td", { colspan: 4 }, h("div", { class: "reading-host" }, "Загружаю…")));
     const pickable = it.status !== "error" && !it.written;
     const ch = it.chosen_info;
     const rowMain = h("tr", null,
       h("td", { style: "min-width:210px;max-width:280px;overflow-wrap:anywhere" }, it.written && !b.source ? h("b", null, it.name) : h("a", { class: "link", href: "/api/batch/" + id + "/file/" + it.idx, target: "_blank" }, it.name), it.rel !== it.name ? h("div", { class: "small muted" }, it.rel) : null,
         it.pages ? h("div", { class: "small muted" }, it.pages + " стр.") : null),
       h("td", null, it.doc_label ? chip(it.doc_label, "blue") : "—",
-        it.summary ? h("div", { class: "small", style: "margin-top:4px" }, it.summary) : null,
-        nameBox(it),
+        isJudgment(it.doc_key) ? h("p",{class:"small muted"},"Суммы и результат — в разборе решения.") : it.summary ? h("div", { class: "small", style: "margin-top:4px" }, it.summary) : null,
+        it.name_check?.verdict && it.name_check.verdict!=="ok" ? h("details",{class:"name-compact"},h("summary",null,"Сверка названия · "+it.name_check.title),nameBox(it)) : nameBox(it),
         it.reasons.filter((x) => !(it.name_check && it.name_check.verdict && x.indexOf(it.name_check.title) === 0)).length
           ? h("div", { class: "small", style: "color:#7C4300;margin-top:4px" }, "Проверить: " + it.reasons.filter((x) => !(it.name_check && it.name_check.verdict && x.indexOf(it.name_check.title) === 0)).join("; ")) : null),
       h("td", null,
@@ -575,9 +614,10 @@ async function BatchView(id) {
             if (!det.hidden && !det.dataset.ok) {
               const r = await api("batch/" + id + "/item/" + it.idx);
               det.dataset.ok = "1";
-              det.firstChild.firstChild.replaceChildren(...r.fields.filter((f) => f.name !== "Что это за документ").map((f) => h("div", null, h("span", { class: "k" }, f.name + (f.page ? " · стр. " + f.page : "")), h("span", null, f.value), f.note && /проверить/.test(f.note) ? h("span", { class: "small", style: "color:#7C4300" }, " (" + f.note + ")") : null, f.snippet ? h("span", { class: "snip" }, "…" + f.snippet + "…") : null)));
+              det.firstChild.firstChild.replaceChildren(readingView(r.fields,it.doc_key));
             }
-          } }, "Что найдено") : null,
+          } }, "Разбор документа") : null,
+
           pickable && !it.skipped ? h("button", { class: "btn btn-s", onclick: () => pickContract(b, it) }, it.chosen != null ? "Другой договор" : "Выбрать договор") : null,
           !it.written && it.status !== "seen" ? h("button", { class: "btn btn-s", onclick: async () => { await api("batch/" + id + "/skip", { idx: it.idx, skip: !it.skipped }); load(); } }, it.skipped ? "Вернуть" : "Пропустить") : null)));
     return [rowMain, det];
@@ -729,6 +769,216 @@ async function Tpl(parts) {
 }
 
 // ------------------------------------------------------------------ Настройки
+async function dossierDialog(b) {
+  const panel=h("div",null,"Загружаю…");
+  openModal([h("h2",null,"Собрать судебное досье"),panel,h("button",{class:"btn mt",onclick:closeModal},"Закрыть")]);
+  try {
+    const list=await api("dossiers");
+    const select=h("select",{class:"fld"},h("option",{value:""},"Новое досье"),list.map(x=>h("option",{value:x.id},x.title+" · "+x.count+" док.")));
+    const title=h("input",{class:"fld",placeholder:"ФИО / наименование должника или название дела"});
+    select.addEventListener("change",()=>{title.hidden=!!select.value});
+    const archive=h("input",{type:"checkbox"});
+    const chosen=new Set();
+    const items=b.items.filter(x=>x.status!=="error" && x.nfields);
+    const err=h("div");
+    panel.replaceChildren(h("p",{class:"small muted"},"Выберите только документы одного должника. Досье можно создать без загруженного портфеля CRM. Можно дополнительно сохранить оригиналы локально."),select,title,h("label",{class:"row"},archive," Сохранить копии оригиналов в локальном архиве"),
+      h("div",{style:"max-height:350px;overflow:auto"},items.map(x=>h("label",{class:"row",style:"padding:6px 0"},h("input",{type:"checkbox",onchange:e=>e.target.checked?chosen.add(x.idx):chosen.delete(x.idx)}),h("span",null,x.name+" · "+x.doc_label)))),
+      h("button",{class:"btn btn-p mt",onclick:async(e)=>{
+        e.target.disabled=true;
+        try {
+          const r=await api("dossiers/attach",{batch:b.id,indices:[...chosen],title:title.value,dossier_id:select.value?Number(select.value):null,archive:archive.checked});
+          closeModal();location.hash="#/dossiers/"+r.id;
+        }catch(e){err.replaceChildren(errBox(e.message))}
+        finally{e.target.disabled=false}
+      }},"Сохранить досье"),err);
+  }catch(e){panel.replaceChildren(errBox(e.message))}
+}
+async function Dossiers(parts) {
+  if(!parts.length){
+    const rows=await api("dossiers");
+    return h("div",null,header("Судебные досье","Независимый от CRM архив результатов читки по должникам и судебным делам.",h("a",{class:"btn btn-p",href:"#/batch"},"Загрузить документы")),
+      h("div",{class:"card"},rows.length?rows.map(x=>h("a",{class:"cand",href:"#/dossiers/"+x.id},h("b",null,x.title),h("span",null,x.count+" документов"))):h("p",{class:"muted"},"Загрузите документы и нажмите «Собрать судебное досье».")));
+  }
+  const d=await api("dossiers/"+parts[0]);
+  const select=h("select",{class:"fld"},h("option",{value:""},"Не установлено"),d.documents.map(x=>h("option",{value:x.sha},fd(x.date)+" · "+x.doc_label+" · "+x.name)));
+  select.value=d.reviewed_doc||"";
+  const note=h("textarea",{class:"fld",rows:4,placeholder:"Основание: что изменено, отменено или оставлено в силе"});
+  note.value=d.review_note||"";
+  const msg=h("div");
+  const blocks=d.documents.map(x=>{
+    const fields=h("div",{class:"reading-host",hidden:true},readingView(x.fields,x.doc_key));
+    return h("div",{class:"card mb"},h("div",{class:"row sp"},h("div",null,h("b",null,fd(x.date)+" · "+x.doc_label),h("p",{class:"small muted"},x.name+" · дело "+(x.case||"не установлено")+" · "+(x.court||"суд не установлен"))),
+      h("div",{class:"row"},x.has_original?h("a",{class:"btn btn-s",href:"/api/dossiers/"+d.id+"/original/"+x.sha},"Скачать оригинал"):null,h("a",{class:"btn btn-s",href:"#/batch/"+x.batch},"К загрузке"),h("button",{class:"btn btn-s",onclick:()=>fields.hidden=!fields.hidden},"Реквизиты и цитаты"))),
+      x.fields.find(f=>f.name==="Результат рассмотрения")?h("p",null,x.fields.find(f=>f.name==="Результат рассмотрения").value):null,
+      x.reasons.length?h("p",{class:"small err"},x.reasons.join("; ")):null,fields);
+  });
+  return h("div",null,h("a",{class:"link",href:"#/dossiers"},"← Все досье"),
+    header(d.title,d.documents.length+" документов",h("a",{class:"btn",href:"#/batch"},"Добавить документы"),h("a",{class:"btn",href:"#/interest?dossier="+d.id},"Калькулятор")),
+    h("div",{class:"card mb"},h("h2",null,"Проверка судебных актов"),d.warnings.map(w=>h("p",{class:"small muted"},w)),
+      h("label",null,"Акт, выбранный сотрудником после проверки",select),h("label",null,"Комментарий и основания",note),
+      h("button",{class:"btn btn-p mt",onclick:async()=>{try{await api("dossiers/"+d.id+"/review",{sha:select.value,note:note.value});msg.replaceChildren(h("p",null,"Сохранено"));}catch(e){msg.replaceChildren(errBox(e.message))}}},"Сохранить заключение"),msg),
+    dossierLinks(d),dossierCRM(d),dossierPayments(d),
+    h("div",{class:"card mb"},h("h2",null,"История расчётов"),(d.calculations||[]).length?(d.calculations||[]).map(x=>h("div",{style:"padding:8px 0;border-top:1px solid #EBEEF3"},h("b",null,fd(x.created)+" · "+money(x.result.interest)),h("div",{class:"small muted"},x.inputs.components?x.inputs.components.length+" самостоятельных начислений":fd(x.inputs.start)+" — "+fd(x.inputs.end)+" · база "+money(x.inputs.principal)),h("div",{class:"small muted"},!x.needs_review?"Привязан к выбранному акту; условия проверить":"Требуется повторная сверка акта или платежей"))):h("p",{class:"muted"},"Расчётов пока нет.")),
+    h("h2",null,"Хронология"),blocks);
+}
+const RELATIONS={upheld:"Оставляет без изменения",changed:"Изменяет",cancelled:"Отменяет",remanded:"Отменяет и направляет на новое рассмотрение",enforcement:"Исполнение",related:"Связан с актом"};
+function dossierLinks(d){
+  const opts=()=>d.documents.map(x=>h("option",{value:x.sha},fd(x.date)+" · "+x.doc_label+" · "+x.name));
+  const child=h("select",{class:"fld"},opts()),parent=h("select",{class:"fld"},opts());
+  const rel=h("select",{class:"fld"},Object.entries(RELATIONS).map(([k,v])=>h("option",{value:k},v)));
+  const note=h("input",{class:"fld",placeholder:"Основание и страница акта"}),msg=h("div");
+  const label=sha=>d.documents.find(x=>x.sha===sha)?.name||sha;
+  return h("div",{class:"card mb"},h("h2",null,"Связи судебных актов"),
+    (d.links||[]).map(x=>h("p",null,h("b",null,label(x.child)), " — "+RELATIONS[x.relation]+" → "+label(x.parent),h("div",{class:"small muted"},x.note))),
+    (d.suggestions||[]).map(x=>h("div",{class:"banner amb mb"},h("div",null,h("b",null,"Возможная связь: "+label(x.child)+" → "+label(x.parent)),h("p",{class:"small"},x.reason),h("button",{class:"btn btn-s",onclick:()=>{child.value=x.child;parent.value=x.parent;note.focus()}},"Проверить и заполнить связь")))),
+    h("p",{class:"small muted"},"Выберите последующий акт и акт, которого он касается. Сохранение связи сбрасывает прежнее заключение для повторной проверки."),
+    h("div",{class:"grid g2"},h("label",null,"Последующий акт",child),h("label",null,"Предыдущий акт",parent),rel,note),
+    h("button",{class:"btn mt",disabled:d.documents.length<2,onclick:async()=>{try{await api("dossiers/"+d.id+"/link",{child:child.value,parent:parent.value,relation:rel.value,note:note.value});route()}catch(e){msg.replaceChildren(errBox(e.message))}}},"Сохранить связь"),msg);
+}
+function dossierPayments(d){
+  const file=h("input",{type:"file",accept:".xlsx,.csv",hidden:true,onchange:async()=>{const f=file.files[0];if(!f)return;try{await uploadStream("dossiers/"+d.id+"/payment-upload?name="+encodeURIComponent(f.name),f);route()}catch(e){msg.replaceChildren(errBox(e.message))}finally{file.value=""}}});
+  const input=h("textarea",{class:"fld",rows:4,placeholder:"2025-02-01;15000;10000;PAY-001"});
+  const msg=h("div");
+  return h("div",{class:"card mb"},h("h2",null,"Платежи"),
+    h("p",{class:"small muted"},"Вставьте строки: дата ГГГГ-ММ-ДД; общая сумма; погашение базы (можно оставить пустым); уникальный номер платежа. Неизвестное распределение не используется в расчёте."),
+    h("div",{class:"row mb"},file,h("button",{class:"btn",onclick:()=>file.click()},"Импорт Excel / CSV"),h("a",{class:"btn",href:"/api/dossiers/"+d.id+"/payment-template"},"Шаблон CSV")),input,h("button",{class:"btn mt",onclick:async(e)=>{e.target.disabled=true;try{
+      const rows=input.value.split(/\r?\n/).filter(x=>x.trim()).map(x=>{const a=x.split(";").map(y=>y.trim());if(a.length!==4)throw new Error("Нужно четыре столбца");return {date:a[0],total:a[1],principal:a[2],reference:a[3]}});
+      await api("dossiers/"+d.id+"/payments",{rows});route();
+    }catch(e){msg.replaceChildren(errBox(e.message))}finally{e.target.disabled=false}}},"Добавить платежи"),msg,
+    (d.payments||[]).length?h("div",{class:"scroll"},h("table",{class:"tbl"},h("thead",null,h("tr",null,["Дата","Всего","В базу","Номер"].map(x=>h("th",null,x)))),h("tbody",null,d.payments.map(x=>h("tr",null,h("td",null,fd(x.day)),h("td",null,money(x.total)),h("td",null,x.principal===null?"Не распределён":money(x.principal)," ",h("button",{class:"btn btn-s",onclick:()=>{
+      const v=h("input",{class:"fld",value:x.principal??"",placeholder:"Пусто — не распределён"}),status=h("div");
+      openModal([h("h2",null,"Распределение платежа "+x.reference),h("p",null,"Всего: "+money(x.total)),v,h("button",{class:"btn btn-p mt",onclick:async()=>{
+        try{await api("dossiers/"+d.id+"/payments/"+x.id,{principal:v.value.trim()});closeModal();route()}catch(e){status.replaceChildren(errBox(e.message))}
+      }},"Сохранить"),status]);
+    }},"Уточнить")),h("td",null,x.reference)))))):null);
+}
+function dossierCRM(d){
+  const inp=h("input",{class:"fld",type:"number",min:1,placeholder:"Внутренний ID договора"}),msg=h("div");
+  return h("div",{class:"card mb"},h("h2",null,"Связь с CRM"),h("p",{class:"small muted"},"Привязка только после проверки договора и должника. Расхождения — по документам, уже записанным в карточку договора."),
+    (d.crm||[]).map(x=>h("div",{class:"mb"},h("a",{class:"link",href:"#/card/"+x.id},x.number+" · "+x.fio+" (ID "+x.id+")"),h("p",null,"Остаток CRM: "+money(x.debt)),x.checks.map(y=>h("p",{class:"small err"},y)))),
+    h("div",{class:"row"},inp,h("button",{class:"btn",onclick:async()=>{try{await api("dossiers/"+d.id+"/crm",{contract_id:inp.value});route()}catch(e){msg.replaceChildren(errBox(e.message))}}},"Привязать договор")),msg);
+}
+function lines2(v,key1,key2){
+  return v.split(/\r?\n/).filter(x=>x.trim()).map(x=>{const a=x.split(";").map(y=>y.trim());if(a.length!==2||!a[0]||!a[1])throw new Error("Нужно два столбца через точку с запятой");return {[key1]:a[0],[key2]:a[1].replace(",",".")}})
+}
+async function AdvancedTools(){
+  const b=await api("rates"),rs=h("textarea",{class:"fld",rows:6,value:b.rows.map(x=>x.date+";"+x.rate).join("\n")}),dateInput=h("input",{class:"fld",type:"date",value:b.verified||""}),source=h("input",{class:"fld",value:b.source||"",placeholder:"Источник и дата проверки"}),msg=h("div");
+  const base=h("input",{class:"fld",type:"number",min:0,step:"0.01",placeholder:"Сумма, ₽"}),months=h("textarea",{class:"fld",rows:5,placeholder:"2025-01;101,2\n2025-02;100,8"}),out=h("div");
+  return h("div",null,header("Справочники и расчёты","Все значения хранятся локально"),
+    h("div",{class:"card mb"},h("h2",null,"Справочник ставок"),h("p",{class:"small muted"},"Введите полную проверенную историю: дата начала действия; ставка %. При сохранении справочник заменяется целиком. Программа не загружает значения из интернета."),
+      rs,h("label",null,"Проверено по дату",dateInput),source,h("button",{class:"btn btn-p mt",onclick:async()=>{try{await api("rates",{rows:lines2(rs.value,"date","rate"),verified:dateInput.value,source:source.value});msg.replaceChildren(h("p",null,"Справочник сохранён"))}catch(e){msg.replaceChildren(errBox(e.message))}}},"Сохранить"),msg),
+    h("div",{class:"card mb"},h("h2",null,"Индексация — математический расчёт"),h("p",{class:"small muted"},"Укажите подтверждённые последовательные полные месяцы и индексы в процентах к предыдущему месяцу. Неполные месяцы, частичные платежи и законный период определяются отдельно."),
+      base,months,h("button",{class:"btn btn-p mt",onclick:async()=>{try{const r=await api("indexation",{amount:base.value,months:lines2(months.value,"month","index")});out.replaceChildren(h("h2",null,"Разница: "+money(r.difference)),h("p",null,"Индексированная сумма: "+money(r.indexed)),h("div",{class:"scroll"},h("table",{class:"tbl"},h("thead",null,h("tr",null,["Месяц","Индекс","Сумма"].map(x=>h("th",null,x)))),h("tbody",null,r.segments.map(x=>h("tr",null,h("td",null,x.month),h("td",null,x.index),h("td",null,money(x.amount))))))))}catch(e){out.replaceChildren(errBox(e.message))}}},"Рассчитать"),out));
+}
+async function Practice(){
+  const rows=await api("practice"),title=h("input",{class:"fld",placeholder:"Название обзора"}),cat=h("input",{class:"fld",placeholder:"Категория"}),summary=h("textarea",{class:"fld",rows:8,placeholder:"Вставьте текст обзора"}),terms=h("textarea",{class:"fld",rows:3,placeholder:"ФИО, адреса, номера дел и другие сведения: каждое значение с новой строки"}),confirmed=h("input",{type:"checkbox"}),msg=h("div"),query=h("input",{class:"fld",placeholder:"Поиск по обзорам"}),results=h("div");
+  const draw=()=>{let q=query.value.toLowerCase();results.replaceChildren(...rows.filter(x=>(x.title+" "+x.category+" "+x.summary).toLowerCase().includes(q)).map(x=>h("details",{class:"card mb"},h("summary",null,x.title+" · "+x.category),h("p",{style:"white-space:pre-wrap"},x.summary))))};
+  query.addEventListener("input",draw);draw();
+  summary.addEventListener("input",()=>confirmed.checked=false);
+  title.addEventListener("input",()=>confirmed.checked=false);cat.addEventListener("input",()=>confirmed.checked=false);
+  return h("div",null,header("Судебная практика","Локальная база проверенных обзоров, без автоматической публикации"),
+    h("div",{class:"card mb"},h("h2",null,"Подготовить обзор"),title,cat,summary,terms,
+      h("button",{class:"btn mt",onclick:async()=>{try{const r=await api("redact",{text:summary.value,terms:terms.value.split(/\r?\n/)});summary.value=r.text;confirmed.checked=false;msg.replaceChildren(h("p",null,"Черновые замены сделаны. Вручную проверьте текст, название и категорию."))}catch(e){msg.replaceChildren(errBox(e.message))}}},"Скрыть указанные сведения в тексте"),
+      h("p",{class:"small muted"},"Это черновое текстовое скрытие, а не гарантированное обезличивание оригинального PDF."),
+      h("label",{class:"row"},confirmed," Проверил все поля и отсутствие идентифицирующих сведений"),
+      h("button",{class:"btn btn-p mt",onclick:async()=>{try{await api("practice",{title:title.value,category:cat.value,summary:summary.value,confirmed:confirmed.checked});route()}catch(e){msg.replaceChildren(errBox(e.message))}}},"Сохранить обзор"),msg),
+    h("div",{class:"card mb"},query),results);
+}
+function backupPanel(){
+  const msg=h("div");
+  return h("div",{class:"card mb"},h("h2",null,"Резервная копия"),h("p",{class:"small muted"},"Снимок базы, сохранённых оригиналов и результатов чтения. Временные загрузки и подключённые сетевые папки не входят. ZIP содержит персональные данные; храните его в защищённом месте."),
+    h("button",{class:"btn",onclick:async(e)=>{e.target.disabled=true;try{const r=await fetch("/api/backup",{method:"POST"});if(!r.ok){const j=await r.json();throw new Error(j.error||"Ошибка резервирования")}const url=URL.createObjectURL(await r.blob());const a=h("a",{href:url,download:"RazborDocs-backup.zip"});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);msg.replaceChildren(h("p",null,"Архив сформирован"))}catch(e){msg.replaceChildren(errBox(e.message))}finally{e.target.disabled=false}}},"Скачать резервную копию"),msg);
+}
+function multiInterestPanel(did){
+  const rows=h("div"),message=h("div",{class:"mt"}),controls=[];
+  const confirmed=h("input",{type:"checkbox"});
+  const clear=()=>{confirmed.checked=false;message.replaceChildren()};
+  const field=(label,attrs={})=>{const i=h("input",{class:"fld",...attrs});i.addEventListener("input",clear);return [h("label",null,h("div",{class:"small muted"},label),i),i]};
+  const add=()=>{
+    if(controls.length>=20)return;
+    const [ll,label]=field("Название начисления",{placeholder:"Например, неустойка по процентам"});
+    const [lp,principal]=field("База, ₽",{type:"number",min:0,step:"0.01"});
+    const [ls,start]=field("Начало включительно",{type:"date"});
+    const [le,end]=field("Конец включительно",{type:"date"});
+    const [lr,rate]=field("Ставка, %",{type:"number",min:0,step:"any"});
+    const mode=h("select",{class:"fld"},h("option",{value:"fixed"},"Годовая"),h("option",{value:"daily"},"Дневная"),h("option",{value:"variable"},"Переменная годовая"));
+    const dc=h("select",{class:"fld"},h("option",{value:"actual"},"Фактические 365/366"),h("option",{value:"365"},"365"),h("option",{value:"366"},"366"),h("option",{value:"360"},"360"));
+    const timing=h("select",{class:"fld"},h("option",{value:"after"},"Со следующего дня"),h("option",{value:"before"},"В день платежа"));
+    const [lv,verified]=field("Ставки проверены по дату",{type:"date"});
+    const rates=h("textarea",{class:"fld",rows:2,placeholder:"2025-01-01;21"});
+    const payments=h("textarea",{class:"fld",rows:2,placeholder:"2025-01-10;10000"});
+    const variable=h("div",{hidden:true},lv,h("p",{class:"small muted"},"История ставок: дата; ставка"),rates);
+    for(const x of [mode,dc,timing,rates,payments])x.addEventListener("input",clear);
+    mode.addEventListener("change",()=>{variable.hidden=mode.value!=="variable";lr.hidden=mode.value==="variable";dc.disabled=mode.value==="daily";if(dc.disabled)dc.value="actual"});
+    const item={label,principal,start,end,rate,mode,dc,timing,verified,rates,payments};
+    const panel=h("div",{class:"card mb"},h("div",{class:"grid g2"},ll,lp,ls,le,h("label",null,"Единица ставки",mode),lr,h("label",null,"Годовой делитель",dc),h("label",null,"Уменьшение базы",timing)),variable,
+      h("div",null,h("p",{class:"small muted"},"Погашения только этой базы (дата; сумма)"),payments),
+      h("button",{class:"btn mt",onclick:()=>{controls.splice(controls.indexOf(item),1);panel.remove();clear()}},"Убрать начисление"));
+    controls.push(item);rows.append(panel);clear();
+  };
+  const parse=(value,key)=>value.split(/\r?\n/).filter(x=>x.trim()).map(x=>{const [date,v,...rest]=x.split(";").map(y=>y.trim());if(!date||!v||rest.length)throw new Error("Формат строки: дата;значение");return {date,[key]:v.replace(",",".")}});
+  add();add();
+  return h("details",{class:"card mt"},h("summary",null,"Несколько начислений одновременно"),
+    h("p",{class:"small muted"},"Введите каждое самостоятельное начисление отдельно. Не переносите общий платёж в каждую строку без распределения. Суммы баз не складываются; особые ограничения проверяются вручную."),rows,
+    h("button",{class:"btn",onclick:add},"Добавить начисление"),
+    h("label",{class:"row mt"},confirmed," Подтверждаю разные основания начислений и распределение платежей"),
+    h("button",{class:"btn btn-p mt",onclick:async(e)=>{e.target.disabled=true;try{
+      const components=controls.map(x=>{if(!x.label.value||!x.principal.value||!x.start.value||!x.end.value||(x.mode.value!=="variable"&&!x.rate.value))throw new Error("Заполните реквизиты каждого начисления");return {label:x.label.value,principal:x.principal.value,start:x.start.value,end:x.end.value,rate:x.rate.value,mode:x.mode.value,day_count:x.dc.value,payment_timing:x.timing.value,rates:x.mode.value==="variable"?parse(x.rates.value,"rate"):[],verified_through:x.verified.value,payments:parse(x.payments.value,"amount")}});
+      const r=await api("interest",{components,confirmed:confirmed.checked,dossier_id:did});
+      message.replaceChildren(h("h2",null,"Сумма начислений: "+money(r.interest)),
+        ...r.components.map(c=>h("details",{class:"card mb"},h("summary",null,c.label+" · "+money(c.interest)),h("p",null,"Остаток этой базы: "+money(c.remaining_principal)),h("div",{class:"scroll"},h("table",{class:"tbl"},h("thead",null,h("tr",null,["Начало","Конец","Дней","База","Ставка","Делитель","Начислено"].map(v=>h("th",null,v)))),h("tbody",null,c.segments.map(q=>h("tr",null,[fd(q.start),fd(q.end),q.days,money(q.base),q.rate,q.denominator,money(q.interest)].map(v=>h("td",null,v))))))))),
+        h("p",{class:"small muted"},r.rounding),r.saved_id?h("p",null,"Расчёт сохранён в досье"):null);
+    }catch(err){message.replaceChildren(errBox(err.message))}finally{e.target.disabled=false}}},did?"Рассчитать и сохранить всё":"Рассчитать всё"),message);
+}
+async function Interest(parts,params) {
+  const did=Number(params.get("dossier"))||null;
+  const dossier=did?await api("dossiers/"+did):null;
+  const field=(label,attrs={})=>{const i=h("input",{class:"fld",...attrs});return [h("label",null,h("div",{class:"small muted"},label),i),i]};
+  const [lp,p]=field("База начисления, ₽",{type:"number",min:0,step:"0.01"});
+  const [ls,start]=field("Начало (включительно)",{type:"date"});
+  const [le,end]=field("Конец (включительно)",{type:"date"});
+  const [lr,rate]=field("Ставка годовых, %",{type:"number",min:0,step:"any"});
+  const [lv,verified]=field("Ставки проверены по дату",{type:"date"});
+  const mode=h("select",{class:"fld"},h("option",{value:"fixed"},"Фиксированная годовая ставка"),h("option",{value:"daily"},"Фиксированная дневная ставка (неустойка)"),h("option",{value:"variable"},"Переменная годовая ставка"));
+  const dc=h("select",{class:"fld"},h("option",{value:"actual"},"Фактические 365/366"),h("option",{value:"365"},"365"),h("option",{value:"366"},"366"),h("option",{value:"360"},"360"));
+  const timing=h("select",{class:"fld"},h("option",{value:"after"},"Со следующего дня"),h("option",{value:"before"},"В день платежа"));
+  const rates=h("textarea",{class:"fld",rows:4,placeholder:"2024-01-01;16"});
+  const payments=h("textarea",{class:"fld",rows:4,placeholder:"2025-02-01;10000"});
+  const variable=h("div",{hidden:true},lv,h("p",{class:"small muted"},"История ставок: дата начала действия; процент, одна строка на ставку."),rates,h("button",{class:"btn mt",onclick:async()=>{try{const b=await api("rates");if(!b.rows.length)throw new Error("Сначала заполните справочник");rates.value=b.rows.map(x=>x.date+";"+x.rate).join("\n");verified.value=b.verified;result.replaceChildren(h("p",null,"Источник: "+b.source+". Проверьте полноту истории ставок."))}catch(e){result.replaceChildren(errBox(e.message))}}},"Загрузить локальный справочник"));
+  mode.addEventListener("change",()=>{variable.hidden=mode.value!=="variable";lr.hidden=mode.value==="variable";lr.firstChild.textContent=mode.value==="daily"?"Ставка за день, %":"Ставка годовых, %";dc.disabled=mode.value==="daily";if(dc.disabled)dc.value="actual"});
+  const result=h("div",{class:"mt"});
+  const importPayments=dossier?h("button",{class:"btn mt",onclick:()=>{
+    if(!start.value||!end.value){result.replaceChildren(errBox("Сначала укажите период расчёта"));return}
+    const within=(dossier.payments||[]).filter(x=>x.day>=start.value&&x.day<=end.value);
+    if(within.some(x=>x.principal===null)){result.replaceChildren(errBox("Есть платежи без распределения на базу. Сначала проверьте их."));return}
+    payments.value=within.filter(x=>Number(x.principal)>0).map(x=>x.day+";"+x.principal).join("\n");
+    result.replaceChildren(h("p",null,"Платежи перенесены: "+within.length+". Проверьте базу на дату начала и принадлежность платежей конкретному обязательству."));
+  }},"Перенести платежи досье за период"):null;
+  const parse=(value,key)=>value.split(/\r?\n/).filter(x=>x.trim()).map(x=>{
+    const [day,v,...rest]=x.split(";").map(y=>y.trim());
+    if(!day||!v||rest.length)throw new Error("Строка должна иметь формат дата;значение");
+    return {date:day,[key]:v.replace(",",".")};
+  });
+  const calculate=h("button",{class:"btn btn-p",onclick:async(e)=>{
+    e.target.disabled=true;
+    result.replaceChildren();
+    try{
+      if(!p.value||!start.value||!end.value|| (mode.value!=="variable"&&!rate.value)) throw new Error("Заполните обязательные поля");
+      const r=await api("interest",{principal:p.value,start:start.value,end:end.value,mode:mode.value,rate:rate.value,
+        day_count:dc.value,payment_timing:timing.value,verified_through:verified.value,rates:mode.value==="variable"?parse(rates.value,"rate"):[],payments:parse(payments.value,"amount"),dossier_id:did});
+      result.replaceChildren(h("h2",null,"Начислено: "+money(r.interest)),h("p",null,"Остаток базы: "+money(r.remaining_principal)),
+        h("div",{class:"scroll"},h("table",{class:"tbl"},
+          h("thead",null,h("tr",null,["Начало","Конец","Дней","База",r.rate_unit==="day"?"Ставка %/день":"Ставка %/год","Делитель","Начислено"].map(x=>h("th",null,x)))),
+          h("tbody",null,r.segments.map(x=>h("tr",null,[fd(x.start),fd(x.end),x.days,money(x.base),x.rate,x.denominator,money(x.interest)].map(y=>h("td",null,y))))))),
+        h("p",{class:"small muted"},r.rounding),r.saved_id?h("p",null,"Расчёт сохранён в досье"):null);
+    }catch(e){result.replaceChildren(errBox(e.message))}finally{e.target.disabled=false}
+  }},did?"Рассчитать и сохранить":"Рассчитать");
+  return h("div",null,dossier?h("a",{class:"link",href:"#/dossiers/"+did},"← "+dossier.title):null,header("Калькулятор процентов","Годовые и дневные ставки; каждое начисление и его базу рассчитывайте отдельно."),
+    h("div",{class:"card"},h("div",{class:"grid g2"},lp,ls,le,mode,lr,h("label",null,"Годовой делитель",dc),h("label",null,"Уменьшение базы",timing)),variable,
+      h("p",{class:"small muted"},"Погашения именно базы начисления (не общая сумма платежа): дата; сумма. Выберите способ учёта платежа и делитель в соответствии с подтверждёнными условиями. Не учитываются особые ограничения, моратории, капитализация и другие исключения."),
+      payments,importPayments,h("div",{class:"mt"},calculate),result),multiInterestPanel(did));
+}
+
 async function Settings() {
   const s = await api("settings");
   const org = h("input", { class: "fld", value: s.org_name, placeholder: "Например: ООО «Коллекторское агентство»", style: "max-width:460px" });
@@ -739,6 +989,7 @@ async function Settings() {
   });
   const msg = h("span", { class: "muted" });
   return h("div", null, header("Настройки", "Параметры расчёта сроков и свежести. Меняйте после согласования с юристами."),
+    backupPanel(),
     h("div", { class: "card mb" }, h("h2", null, "Название организации"), h("p", { class: "small muted" }, "Подставляется в шаблоны как «взыскатель», «истец», «кредитор»."), org),
     h("div", { class: "card mb" }, h("h2", null, "Параметры сроков"), rows,
       h("div", { class: "row mt" }, h("button", { class: "btn btn-p", onclick: async () => {

@@ -420,7 +420,7 @@ def check_name(filename: str, a: "Analysis") -> NameCheck:
                 row("Дата", shown, _d(doc_date), "bad",
                     f"В названии указано {shown}, а документ составлен {_d(doc_date)}.")
         else:
-            row("Дата", shown, "в документе не найдена", "info")
+            row("Дата", shown, "дата судебного акта не подтверждена" if a.doc_key in ("decision","appeal","cassation") else "в документе не найдена", "info")
 
     # --- 4. сторона (для документов о замене стороны)
     if a.doc_key == "succession" and c.side:
@@ -674,14 +674,12 @@ def describe(a: "Analysis") -> str:
     elif k == "order_cancel":
         out.append(f"Определение об отмене судебного приказа{when}{case_s}{court}. Приказ больше не действует, "
                    f"взыскателю разъяснено право подать иск.")
-    elif k == "decision":
-        out.append(f"Решение суда{court}{when}{case_s}: взыскание долга." + (f" Должник: {fio}." if fio else "") +
-                   (f" Взыскатель: {cred}." if cred else "") + (f" Сумма: {_m(amount)} руб." if amount else ""))
-        v = _fv(a, "Вступил в силу")
-        if isinstance(v, date):
-            out.append(f"Вступило в силу {_d(v)}.")
-        if fee:
-            out.append(f"Госпошлина {_m(fee)} руб.")
+    elif k in ("decision", "appeal", "cassation"):
+        result = _fv(a, "Результат рассмотрения")
+        out.append(f"{a.doc_label}{when}{case_s}." + (f" {result}." if result else " Итог требует проверки."))
+        if _fv(a, "Начисление до исполнения"):
+            out.append("Найдены условия начислений до исполнения.")
+        out.append("Присуждённую сумму сверить по резолютивной части.")
     elif k == "ruling":
         out.append(f"Определение суда{court}{when}{case_s}." + (f" {a.title[:1].upper() + a.title[1:]}." if a.title else ""))
     elif k == "writ":

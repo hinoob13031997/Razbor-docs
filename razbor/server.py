@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import batch as B
-from . import crm, folders, matcher, rules, templates
+from . import crm, folders, matcher, rules, templates, interest, dossiers, advanced
 from .actions import next_actions
 from .paths import _bundle_dir, app_dir
 from .store import Store
@@ -91,6 +91,8 @@ class Ctx:
     def __init__(self, base: Path):
         self.base = base
         self.store = Store(str(base / "razbor.sqlite"))
+        dossiers.init(self.store)
+        advanced.init(self.store)
         self.uploads = base / "uploads"
         self.docs = base / "docs"
         self.batches = base / "batches"
@@ -286,7 +288,7 @@ def _batch_out(b: B.Batch, ctx: Ctx, with_items: bool = True) -> dict:
         for i in list(b.items):
             ch = info.get(i.chosen) if i.chosen else None
             items.append({
-                "idx": i.idx, "rel": i.rel, "name": i.name, "status": i.status, "doc_label": i.doc_label,
+                "idx": i.idx, "rel": i.rel, "name": i.name, "status": i.status, "doc_key": i.doc_key, "doc_label": i.doc_label,
                 "group": i.group, "pages": i.pages, "note": i.note, "reasons": i.reasons, "seen": i.seen,
                 "summary": i.summary, "name_check": i.name_check,
                 "written": i.written, "skipped": i.skipped, "chosen": i.chosen,
@@ -381,7 +383,7 @@ class Handler(BaseHTTPRequestHandler):
                     "", f"http://127.0.0.1:{self.ctx.port}", f"http://localhost:{self.ctx.port}"):
                 return self._err(403, "Чужой источник запроса")
             if path.startswith("/api/"):
-                if method == "POST" and not path.endswith("/upload"):
+                if method == "POST" and not path.endswith(("/upload","/payment-upload")):
                     if int(self.headers.get("Content-Length") or 0) > 5_000_000:
                         return self._err(413, "Слишком большой запрос")
                     self._body()
@@ -441,6 +443,104 @@ class Handler(BaseHTTPRequestHandler):
         parts = route.strip("/").split("/")
         head = parts[0]
         today = date.today()
+
+        if head in ("rates", "indexation", "practice", "redact", "backup"):
+            try:
+                if head=="rates":
+                    if method=="POST":
+                        d=self._jbody()
+                        advanced.save_rates(st,d["rows"],d["verified"],d["source"])
+                    return self._json(advanced.rates(st))
+                if head=="indexation" and method=="POST":
+                    d=self._jbody()
+                    return self._json(advanced.indexation(d["amount"],d["months"]))
+                if head=="practice":
+                    if method=="POST":
+                        d=self._jbody()
+                        return self._json({"id":advanced.practice_save(st,d["title"],d["category"],d["summary"],d.get("confirmed"))})
+                    return self._json(advanced.practice_list(st))
+                if head=="redact" and method=="POST":
+                    d=self._jbody()
+                    return self._json({"text":advanced.redact(d["text"],d["terms"])})
+                if head=="backup" and method=="POST":
+                    if ctx.busy():
+                        return self._err(409,"Дождитесь завершения обработки")
+                    with ctx.lock:
+                        name=advanced.backup(st)
+                    try:
+                        return self._file(name,"RazborDocs-backup-"+today.isoformat()+".zip",download=True)
+                    finally:
+                        os.unlink(name)
+            except (ValueError,TypeError,KeyError,OSError,ArithmeticError) as e:
+                return self._err(400,str(e))
+            return self._err(404,"Действие не найдено")
+
+        if head == "dossiers":
+            try:
+                if len(parts)==1 and method=="GET":
+                    return self._json(dossiers.list_dossiers(st))
+                if len(parts)==2 and parts[1]=="attach" and method=="POST":
+                    d=self._jbody()
+                    b=ctx.get_batch(d.get("batch",""))
+                    if not b or b.state not in ("ready","written"):
+                        return self._err(409,"Сначала завершите чтение документов")
+                    did=dossiers.attach(st,b,d.get("indices"),d.get("title",""),d.get("dossier_id"),archive=d.get("archive") is True)
+                    return self._json({"id":did})
+                if len(parts)>=2 and parts[1].isdigit():
+                    did=int(parts[1])
+                    if len(parts)==2 and method=="GET":
+                        data=dossiers.detail(st,did)
+                        if not data:
+                            return self._err(404,"Досье не найдено")
+                        data["suggestions"]=advanced.suggestions(data["documents"],data["links"])
+                        data["crm"]=advanced.crm_checks(st,did)
+                        return self._json(data)
+                    if len(parts)==3 and parts[2]=="crm" and method=="POST":
+                        advanced.connect_crm(st,did,int(self._jbody()["contract_id"]))
+                        return self._json({"ok":True})
+                    if len(parts)==3 and parts[2]=="payment-template" and method=="GET":
+                        return self._send(200,"\ufeffДата;Сумма;В базу;Номер платежа\r\n".encode("utf-8"),"text/csv; charset=utf-8",{"Content-Disposition":"attachment; filename=payments.csv"})
+                    if len(parts)==3 and parts[2]=="payment-upload" and method=="POST":
+                        if not 0<int(self.headers.get("Content-Length") or 0)<=15*1024*1024:
+                            return self._err(413,"Файл больше 15 МБ или пуст")
+                        rows=advanced.payment_rows(self._body(),q.get("name",""))
+                        return self._json({"added":dossiers.add_payments(st,did,rows)})
+                    if len(parts)==4 and parts[2]=="original" and method=="GET":
+                        original=dossiers.original(st,did,parts[3])
+                        if not original:
+                            return self._err(404,"Оригинал не сохранён")
+                        return self._file(str(original[0]),original[1],download=True)
+                    if len(parts)==3 and parts[2]=="link" and method=="POST":
+                        d=self._jbody()
+                        dossiers.link(st,did,d["child"],d["parent"],d["relation"],d["note"])
+                        return self._json({"ok":True})
+                    if len(parts)==4 and parts[2]=="payments" and parts[3].isdigit() and method=="POST":
+                        dossiers.allocate_payment(st,did,int(parts[3]),self._jbody().get("principal"))
+                        return self._json({"ok":True})
+                    if len(parts)==3 and parts[2]=="payments" and method=="POST":
+                        return self._json({"added":dossiers.add_payments(st,did,self._jbody()["rows"])})
+                    if len(parts)==3 and parts[2]=="review" and method=="POST":
+                        d=self._jbody()
+                        dossiers.review(st,did,d.get("sha"),d.get("note",""))
+                        return self._json({"ok":True})
+            except (ValueError,TypeError,KeyError,OSError) as e:
+                return self._err(400,str(e))
+            return self._err(404,"Действие не найдено")
+
+        if head == "ai-status" and method == "GET":
+            return self._json({"models": [], "available": False, "disabled": True})
+        if head == "interest" and method == "POST":
+            try:
+                d = self._jbody()
+                result = (interest.calculate_many(d["components"],confirmed=d.get("confirmed"))
+                          if "components" in d else interest.calculate_input(d))
+                if d.get("dossier_id") is not None:
+                    if type(d["dossier_id"]) is not int:
+                        raise ValueError("Неверное досье")
+                    result["saved_id"] = dossiers.save_calculation(st, d["dossier_id"], d, result)
+                return self._json(result)
+            except (ValueError, KeyError, TypeError, ArithmeticError) as e:
+                return self._err(400, "Проверьте параметры расчёта: " + str(e))
 
         if head == "ping":
             ctx.last_ping, ctx.seen_ping = time.time(), True
@@ -591,6 +691,10 @@ class Handler(BaseHTTPRequestHandler):
                     return {"batch": b.id, "counts": b.counts()}
                 ctx.run_job(job, run)
                 return self._json(job.info())
+            if sub == "ai" and method == "POST":
+                return self._err(403, "ИИ временно отключён")
+            if sub in ("pick", "skip", "write") and any(j.kind == "ai" and j.state == "running" for j in ctx.jobs.values()):
+                return self._err(409, "Дождитесь завершения анализа ИИ")
             if sub in ("pick", "skip", "write") and b.state == "reading":
                 return self._err(409, "Папка ещё читается. Подтверждать можно после окончания чтения.")
             if sub == "pick" and method == "POST":
@@ -626,7 +730,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not it:
                     return self._err(404, "Документ не найден")
                 return self._json({"fields": it.fields, "facts": it.facts, "reasons": it.reasons,
-                                   "event": it.event, "name": it.name})
+                                   "event": it.event, "name": it.name, "ai_analysis": it.ai_analysis})
             if sub == "file" and len(parts) == 4:
                 it = next((i for i in b.items if i.idx == int(parts[3])), None)
                 if not it:

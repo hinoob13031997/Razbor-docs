@@ -92,6 +92,35 @@ def analyze(rr: ReadResult, custom: list[CustomField] | None = None) -> Analysis
     a.doc_key, a.doc_label, a.group, a.score = cl.key, cl.label, cl.group, cl.score
     a.title = C.title_detail(doc.head)
     a.fields = F.extract(doc, cl.key, cl.group)
+    if cl.group in (C.G_COURT, C.G_BANKR):
+        from .court_review import extract_review, correct_decision_header, additional_dates
+        a.fields.update(extract_review(doc))
+        if cl.key not in ("decision","appeal","cassation","succession"):
+            a.fields.pop("Проверка: резолютивная часть",None)
+        if cl.key=="succession" and (rr.pages_read<rr.page_count or any(p.method in ("empty","skipped") for p in rr.pages)):
+            a.fields["Проверка: полнота документа"]=F.Hit("Не все страницы определения о правопреемстве прочитаны.",0,0,"проверить оригинал")
+        if cl.key in ("decision", "appeal", "cassation"):
+            correct_decision_header(doc, a.fields)
+            additional_dates(doc, a.fields)
+            if any(p.method in ("empty", "skipped") for p in rr.pages) or rr.pages_read < rr.page_count:
+                a.fields.pop("Итого распознанных фиксированных взысканий",None)
+                a.fields["Проверка: полнота документа"]=F.Hit("Не все страницы прочитаны; итог не сформирован.",0,0,"проверить оригинал")
+            weak=[str(p.index) for p in rr.pages if p.method=="ocr" and p.conf is not None and p.conf<70]
+            if weak:
+                a.fields.pop("Итого распознанных фиксированных взысканий",None)
+                a.fields["Проверка: качество OCR"]=F.Hit("Низкое качество OCR на страницах "+", ".join(weak)+"; итог не сформирован.",0,0,"сверить оригинал")
+            if "Проверка: несколько резолютивных частей" in a.fields:
+                for key in ("Дата документа","Вступил в силу","Номер дела"):
+                    a.fields.pop(key,None)
+            # Исторические суммы из мотивировки не являются присуждённым долгом.
+            old = a.fields.pop("Сумма основная", None)
+            if old is not None:
+                old.note = "сумма из текста, не подтверждённый размер взыскания"
+                a.fields["Сумма из текста (не итог взыскания)"] = old
+            fee = a.fields.pop("Госпошлина", None)
+            if fee is not None:
+                fee.note = "сумма из текста, проверить резолютивную часть"
+                a.fields["Госпошлина (упоминание)"] = fee
     for name, hit in a.fields.items():
         a.pages[name] = doc.page_of(hit.pos)
         a.snippets[name] = doc.snippet(hit.pos, hit.end)
@@ -137,6 +166,10 @@ def review_reasons(rr: ReadResult, a: Analysis, ocr_warn_below: float = 70.0) ->
         reasons.append("вид документа не определён")
     elif not any(k in a.fields for k in KEY_FIELDS):
         reasons.append("не найдено ни одного ключевого поля")
+    if a.doc_key in ("decision", "appeal", "cassation"):
+        reasons.append("Судебный акт: проверьте резолютивную часть, суммы и действующий судебный акт")
+        if "Дата документа" not in a.fields:
+            reasons.append("Дата судебного акта не установлена по шапке")
     s = a.fields.get("Сумма основная")
     if s is not None and "максимуму" in s.note:
         reasons.append("сумма выбрана по максимуму, проверьте")
@@ -145,6 +178,9 @@ def review_reasons(rr: ReadResult, a: Analysis, ocr_warn_below: float = 70.0) ->
     for w in rr.warnings:
         if "пропущено" in w or "не все" in w:
             reasons.append(w)
+    for k,hit in a.fields.items():
+        if k.startswith("Проверка: "):
+            reasons.append(str(hit.value))
     for x in a.issues:
         reasons.append(x)
     return reasons

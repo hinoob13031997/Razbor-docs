@@ -3,6 +3,8 @@ name: Сборка для Windows
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -30,6 +32,15 @@ jobs:
           foreach ($l in "rus","eng","osd") {
             Invoke-WebRequest "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$l.traineddata" -OutFile "tessdata_dl/$l.traineddata"
           }
+
+      - name: Проверка судебных досье (без сети)
+        run: python tests/test_dossiers.py
+
+      - name: Проверка расширенных автономных инструментов
+        run: python tests/test_advanced.py
+
+      - name: Проверка калькулятора (без сети)
+        run: python tests/test_interest_ai.py InterestTest
 
       - name: Проверка чтения полей (готовый текст, без распознавания)
         run: python tests/test_fields.py

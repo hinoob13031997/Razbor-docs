@@ -108,6 +108,9 @@ def match_document(store: Store, a: Analysis) -> dict:
         return {"status": "nf", "candidates": []}
     top = cands[0]
     second = cands[1] if len(cands) > 1 else None
+    risks=("Проверка: несколько резолютивных частей","Проверка: полнота документа","Проверка: различаются участники","Проверка: несколько получателей","Проверка: цепочка уступок","Проверка: качество OCR","Проверка: особые условия взыскания","Проверка: правопреемство")
+    if any(k in a.fields for k in risks):
+        return {"status":"confirm","candidates":cands[:6]}
     if top["score"] >= 85 and (second is None or second["score"] < top["score"] - 15):
         return {"status": "ok", "candidates": cands[:3]}
     return {"status": "confirm", "candidates": cands[:6]}
@@ -148,6 +151,8 @@ def facts_from(a: Analysis) -> dict[str, str]:
         return _iso(h.value) if h is not None else None
 
     dk = a.doc_key
+    if any(k in f for k in ("Проверка: несколько резолютивных частей","Проверка: полнота документа")):
+        return out
     if dk in ("decision", "order"):
         if dt("Дата документа"):
             out["decision_date"] = dt("Дата документа")  # type: ignore[assignment]
@@ -172,6 +177,8 @@ def facts_from(a: Analysis) -> dict[str, str]:
         if "Основание окончания" in f:
             out["ip_end_basis"] = str(f["Основание окончания"].value)
     elif dk == "succession":
+        if "Проверка: правопреемство" in f:
+            return out
         if dt("Дата документа"):
             out["succession_date"] = dt("Дата документа")  # type: ignore[assignment]
         if dt("Дата уступки"):

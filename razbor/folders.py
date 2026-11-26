@@ -52,6 +52,19 @@ def remove_source(store: Store, sid: int) -> None:
         c.execute("DELETE FROM sources WHERE id=?", (sid,))
 
 
+def can_auto_write(it: B.Item) -> bool:
+    """Уверенная привязка не равна достоверному содержанию документа."""
+    if it.status != "ok" or it.chosen is None or it.doc_key in ("", "unknown"):
+        return False
+    critical = (
+        "текст не найден", "низкая уверенность распознавания", "вид документа не определён",
+        "не найдено ни одного ключевого поля", "сумма выбрана по максимуму",
+        "фио взято без метки", "пропущено", "не все страницы",
+        "судебный акт: проверьте", "дата судебного акта не установлена",
+    )
+    return not any(marker in reason.lower() for reason in it.reasons for marker in critical)
+
+
 def scan_source(store: Store, sid: int, batches_dir: str, progress: Callable[[int, int, str], None],
                 cancel: threading.Event, custom_fields_path: str | None = None, use_ocr: bool = True) -> dict:
     src = store.one("SELECT * FROM sources WHERE id=?", (sid,))
@@ -102,7 +115,12 @@ def scan_source(store: Store, sid: int, batches_dir: str, progress: Callable[[in
         for i in range(0, len(todo), CHUNK):
             part = todo[i:i + CHUNK]
             items = list(ex.map(lambda x: B.process_item(store, 0, x[0], root, opts, ocr, None, custom, cancel, True), part))
-            auto = [it for it in items if it.status == "ok" and it.chosen is not None]
+            auto = [it for it in items if can_auto_write(it)]
+            for it in items:
+                if it.status == "ok" and it.chosen is not None and not can_auto_write(it):
+                    it.status = "confirm"
+                    it.chosen = None
+                    it.reasons.append("Автозапись остановлена: проверьте содержание и подтвердите договор")
             w = B.write_items(store, auto, recalc=False)
             if w["ids"]:
                 recalc_contracts(store, w["ids"])
